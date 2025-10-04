@@ -1,0 +1,126 @@
+╔═══════════════════════════════════════════════════════════════╗
+║              🎮 PIXEL MAGE ARENA - QUICK START 🎮            ║
+╚═══════════════════════════════════════════════════════════════╝
+
+▶ INSTANT PLAY (No Setup Required)
+═══════════════════════════════════════════════════════════════
+
+1. Open "index.html" in your browser (Chrome/Firefox/Edge)
+2. Click "SINGLEPLAYER" 
+3. Play!
+
+That's it! The game runs entirely in your browser.
+
+
+▶ CONTROLS
+═══════════════════════════════════════════════════════════════
+
+🎯 Mouse       - Aim & Shoot spells
+⬅️ A/D         - Move left/right  
+⬆️ W/Space     - Jump
+🔢 1-4         - Select spell type
+   1: Fireball (explosive)
+   2: Ice (piercing)
+   3: Lightning (fast)
+   4: Earth (heavy)
+
+
+▶ MULTIPLAYER SETUP (Optional)
+═══════════════════════════════════════════════════════════════
+
+1. Install Node.js from nodejs.org
+
+2. Open terminal/command prompt in this folder
+
+3. Install dependencies:
+   npm install
+
+4. Start server:
+   npm start
+
+5. Open index.html in multiple browser windows
+
+6. Click "MULTIPLAYER" and connect to ws://localhost:8080
+
+7. Play with friends!
+
+
+▶ FILES OVERVIEW
+═══════════════════════════════════════════════════════════════
+
+CLIENT (Run in Browser):
+  index.html      - Main game page (START HERE)
+  engine.js       - Core game engine
+  terrain.js      - Procedural terrain & destruction
+  physics.js      - Chunk physics & particles
+  player.js       - Mage character
+  projectile.js   - Spell projectiles
+  network.js      - Multiplayer networking
+  input.js        - Controls
+
+SERVER (Node.js):
+  server.js       - Multiplayer server
+  package.json    - Dependencies
+
+DOCS:
+  README.md       - Full documentation
+  QUICKSTART.txt  - This file
+
+
+▶ TIPS
+═══════════════════════════════════════════════════════════════
+
+• Terrain destruction is permanent (until you refresh)
+• Destroyed terrain becomes physics chunks
+• Chunks can break into smaller pieces
+• Different spells have different effects:
+  - Fireball: Large radius, explosive
+  - Ice: Pierces through terrain
+  - Lightning: Fast, chain damage
+  - Earth: Creates heavy debris
+
+
+▶ TROUBLESHOOTING
+═══════════════════════════════════════════════════════════════
+
+Game won't start?
+→ Make sure you're using a modern browser (Chrome 90+, Firefox 88+)
+→ Try opening index.html with "Open With -> Browser"
+
+Game is laggy?
+→ It's optimized but creates lots of particles
+→ Close other browser tabs
+→ Try reducing window size
+
+Multiplayer won't connect?
+→ Make sure server is running (npm start)
+→ Check that you're using ws://localhost:8080
+→ Try singleplayer mode instead
+
+
+▶ ADVANCED
+═══════════════════════════════════════════════════════════════
+
+Customize the game:
+• Edit terrain.js to change world generation
+• Edit projectile.js to add new spells
+• Edit engine.js to adjust physics
+
+See README.md for detailed documentation.
+
+
+▶ TECHNICAL SPECS
+═══════════════════════════════════════════════════════════════
+
+• Engine: Pure JavaScript (no dependencies)
+• Physics: Deterministic fixed timestep (60 FPS)
+• Rendering: HTML5 Canvas (optimized)
+• Network: WebSocket (real-time)
+• Players: Up to 64 simultaneous
+• Performance: Object pooling, dirty regions
+• Terrain: 1600x900 pixels, procedurally generated
+
+
+Built with ⚡ for speed and 🎮 for fun!
+
+Happy maging! 🧙‍♂️✨

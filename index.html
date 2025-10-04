@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pixel Mage Arena - Multiplayer Destruction Game</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Courier New', monospace;
+            background: linear-gradient(135deg, #0a0a1a 0%, #1a0a2e 100%);
+            color: #ffffff;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        
+        #container {
+            position: relative;
+        }
+        
+        #gameCanvas {
+            border: 3px solid #4ecdc4;
+            box-shadow: 0 0 30px rgba(78, 205, 196, 0.5);
+            cursor: crosshair;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        
+        #menu {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(10, 10, 26, 0.95);
+            padding: 40px;
+            border-radius: 10px;
+            border: 2px solid #4ecdc4;
+            text-align: center;
+            min-width: 400px;
+        }
+        
+        #menu h1 {
+            color: #4ecdc4;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 0 0 10px rgba(78, 205, 196, 0.7);
+        }
+        
+        #menu h2 {
+            color: #ffd93d;
+            font-size: 1.2em;
+            margin-bottom: 30px;
+            font-weight: normal;
+        }
+        
+        .menu-section {
+            margin: 20px 0;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #4ecdc4 0%, #3a9d96 100%);
+            border: none;
+            color: #0a0a1a;
+            padding: 15px 40px;
+            font-size: 1.1em;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 5px;
+            margin: 10px;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(78, 205, 196, 0.3);
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(78, 205, 196, 0.5);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button.secondary {
+            background: linear-gradient(135deg, #ffd93d 0%, #d4b130 100%);
+        }
+        
+        input {
+            background: rgba(255, 255, 255, 0.1);
+            border: 2px solid #4ecdc4;
+            color: #ffffff;
+            padding: 12px 20px;
+            font-size: 1em;
+            font-family: 'Courier New', monospace;
+            border-radius: 5px;
+            width: 100%;
+            margin: 10px 0;
+        }
+        
+        input::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+        }
+        
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(10, 10, 26, 0.8);
+            padding: 15px;
+            border-radius: 5px;
+            border: 2px solid #4ecdc4;
+            min-width: 200px;
+        }
+        
+        .hud-item {
+            margin: 5px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .hud-label {
+            color: #4ecdc4;
+            margin-right: 10px;
+        }
+        
+        .hud-value {
+            color: #ffffff;
+            font-weight: bold;
+        }
+        
+        #spellBar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+        }
+        
+        .spell-slot {
+            width: 60px;
+            height: 60px;
+            background: rgba(10, 10, 26, 0.8);
+            border: 2px solid #4ecdc4;
+            border-radius: 5px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .spell-slot:hover {
+            border-color: #ffd93d;
+            transform: translateY(-3px);
+        }
+        
+        .spell-slot.active {
+            border-color: #ffd93d;
+            box-shadow: 0 0 15px rgba(255, 217, 61, 0.7);
+            background: rgba(255, 217, 61, 0.2);
+        }
+        
+        .spell-icon {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            margin-bottom: 5px;
+        }
+        
+        .spell-name {
+            font-size: 0.7em;
+            color: #ffffff;
+        }
+        
+        .spell-key {
+            font-size: 0.6em;
+            color: #888;
+        }
+        
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(10, 10, 26, 0.8);
+            padding: 15px;
+            border-radius: 5px;
+            border: 2px solid #4ecdc4;
+            font-size: 0.9em;
+        }
+        
+        .control-row {
+            margin: 3px 0;
+        }
+        
+        .hidden {
+            display: none !important;
+        }
+        
+        #connectionStatus {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(10, 10, 26, 0.8);
+            padding: 10px 15px;
+            border-radius: 5px;
+            border: 2px solid #ef4444;
+        }
+        
+        #connectionStatus.connected {
+            border-color: #4ade80;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ef4444;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-indicator.connected {
+            background: #4ade80;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <canvas id="gameCanvas" width="1600" height="900"></canvas>
+        
+        <div id="menu">
+            <h1>⚡ PIXEL MAGE ARENA ⚡</h1>
+            <h2>Multiplayer Destruction Game</h2>
+            
+            <div class="menu-section">
+                <button id="btnSinglePlayer" onclick="startSinglePlayer()">
+                    🎮 SINGLEPLAYER
+                </button>
+            </div>
+            
+            <div class="menu-section">
+                <button id="btnMultiplayer" onclick="showMultiplayerMenu()" class="secondary">
+                    🌐 MULTIPLAYER
+                </button>
+            </div>
+            
+            <div id="multiplayerMenu" class="menu-section hidden">
+                <input type="text" id="serverUrl" placeholder="Server URL (ws://localhost:8080)" value="ws://localhost:8080">
+                <button onclick="startMultiplayer()">🔗 CONNECT</button>
+                <button onclick="hideMultiplayerMenu()">← BACK</button>
+            </div>
+            
+            <div class="menu-section" style="margin-top: 30px; font-size: 0.9em; color: #888;">
+                <p>Destroy terrain pixel-by-pixel</p>
+                <p>Cast magical spells</p>
+                <p>Up to 64 players online</p>
+            </div>
+        </div>
+        
+        <div id="hud" class="hidden">
+            <div class="hud-item">
+                <span class="hud-label">Health:</span>
+                <span class="hud-value" id="health">100</span>
+            </div>
+            <div class="hud-item">
+                <span class="hud-label">Players:</span>
+                <span class="hud-value" id="playerCount">1</span>
+            </div>
+            <div class="hud-item">
+                <span class="hud-label">Ping:</span>
+                <span class="hud-value" id="ping">0ms</span>
+            </div>
+        </div>
+        
+        <div id="spellBar" class="hidden">
+            <div class="spell-slot active" data-spell="0" onclick="selectSpell(0)">
+                <div class="spell-icon" style="background: #ff6b35;"></div>
+                <div class="spell-name">Fire</div>
+                <div class="spell-key">1</div>
+            </div>
+            <div class="spell-slot" data-spell="1" onclick="selectSpell(1)">
+                <div class="spell-icon" style="background: #4ecdc4;"></div>
+                <div class="spell-name">Ice</div>
+                <div class="spell-key">2</div>
+            </div>
+            <div class="spell-slot" data-spell="2" onclick="selectSpell(2)">
+                <div class="spell-icon" style="background: #ffd93d;"></div>
+                <div class="spell-name">Bolt</div>
+                <div class="spell-key">3</div>
+            </div>
+            <div class="spell-slot" data-spell="3" onclick="selectSpell(3)">
+                <div class="spell-icon" style="background: #92633c;"></div>
+                <div class="spell-name">Earth</div>
+                <div class="spell-key">4</div>
+            </div>
+        </div>
+        
+        <div id="controls" class="hidden">
+            <div class="control-row">🎯 <strong>Mouse</strong>: Aim & Shoot</div>
+            <div class="control-row">⬅️➡️ <strong>A/D</strong>: Move</div>
+            <div class="control-row">⬆️ <strong>W/Space</strong>: Jump</div>
+            <div class="control-row">🔢 <strong>1-4</strong>: Select Spell</div>
+        </div>
+        
+        <div id="connectionStatus" class="hidden">
+            <span class="status-indicator"></span>
+            <span id="statusText">Disconnected</span>
+        </div>
+    </div>
+    
+    <!-- Game Scripts -->
+    <script src="terrain.js"></script>
+    <script src="physics.js"></script>
+    <script src="player.js"></script>
+    <script src="projectile.js"></script>
+    <script src="engine.js"></script>
+    <script src="network.js"></script>
+    <script src="input.js"></script>
+    
+    <script>
+        let game = null;
+        let network = null;
+        let input = null;
+        
+        function startSinglePlayer() {
+            const canvas = document.getElementById('gameCanvas');
+            
+            // Initialize game
+            game = new GameEngine(canvas, false);
+            game.init();
+            
+            // Add local player
+            const playerId = 'player-' + Math.random().toString(36).substr(2, 9);
+            game.playerId = playerId;
+            game.addPlayer(playerId, game.width / 2, 100);
+            
+            // Setup input
+            input = new InputManager(canvas, game, null);
+            
+            // Hide menu, show HUD
+            document.getElementById('menu').classList.add('hidden');
+            document.getElementById('hud').classList.remove('hidden');
+            document.getElementById('spellBar').classList.remove('hidden');
+            document.getElementById('controls').classList.remove('hidden');
+            
+            // Start game loop
+            game.start();
+            
+            // Update HUD
+            setInterval(updateHUD, 100);
+            
+            console.log('Singleplayer game started!');
+        }
+        
+        function showMultiplayerMenu() {
+            document.getElementById('btnSinglePlayer').classList.add('hidden');
+            document.getElementById('btnMultiplayer').classList.add('hidden');
+            document.getElementById('multiplayerMenu').classList.remove('hidden');
+        }
+        
+        function hideMultiplayerMenu() {
+            document.getElementById('btnSinglePlayer').classList.remove('hidden');
+            document.getElementById('btnMultiplayer').classList.remove('hidden');
+            document.getElementById('multiplayerMenu').classList.add('hidden');
+        }
+        
+        function startMultiplayer() {
+            const canvas = document.getElementById('gameCanvas');
+            const serverUrl = document.getElementById('serverUrl').value;
+            
+            // Initialize game
+            game = new GameEngine(canvas, false);
+            game.init();
+            
+            // Setup networking
+            network = new NetworkManager(game);
+            
+            // Show connection status
+            document.getElementById('connectionStatus').classList.remove('hidden');
+            updateConnectionStatus(false, 'Connecting...');
+            
+            // Try to connect
+            try {
+                network.connect(serverUrl);
+                
+                // Wait for connection
+                setTimeout(() => {
+                    if (network.connected) {
+                        // Setup input with network
+                        input = new InputManager(canvas, game, network);
+                        
+                        // Hide menu, show HUD
+                        document.getElementById('menu').classList.add('hidden');
+                        document.getElementById('hud').classList.remove('hidden');
+                        document.getElementById('spellBar').classList.remove('hidden');
+                        document.getElementById('controls').classList.remove('hidden');
+                        
+                        // Start game loop
+                        game.start();
+                        
+                        // Update HUD
+                        setInterval(updateHUD, 100);
+                        
+                        updateConnectionStatus(true, 'Connected');
+                        console.log('Multiplayer game started!');
+                    } else {
+                        updateConnectionStatus(false, 'Connection failed');
+                        alert('Could not connect to server. Starting in offline mode instead.');
+                        startSinglePlayer();
+                    }
+                }, 1000);
+            } catch (error) {
+                console.error('Connection error:', error);
+                updateConnectionStatus(false, 'Error: ' + error.message);
+                alert('Connection error. Starting in offline mode instead.');
+                startSinglePlayer();
+            }
+        }
+        
+        function updateHUD() {
+            if (!game || !game.playerId) return;
+            
+            const player = game.players.get(game.playerId);
+            if (player) {
+                document.getElementById('health').textContent = player.health;
+            }
+            
+            document.getElementById('playerCount').textContent = game.players.size;
+            
+            if (network) {
+                document.getElementById('ping').textContent = network.getLatency() + 'ms';
+            }
+            
+            // Update input
+            if (input) {
+                input.update();
+            }
+        }
+        
+        function selectSpell(index) {
+            if (!game || !game.playerId) return;
+            
+            const player = game.players.get(game.playerId);
+            if (player) {
+                player.selectedSpell = index;
+                
+                // Update UI
+                document.querySelectorAll('.spell-slot').forEach((slot, i) => {
+                    if (i === index) {
+                        slot.classList.add('active');
+                    } else {
+                        slot.classList.remove('active');
+                    }
+                });
+            }
+        }
+        
+        function updateConnectionStatus(connected, text) {
+            const status = document.getElementById('connectionStatus');
+            const indicator = status.querySelector('.status-indicator');
+            const statusText = document.getElementById('statusText');
+            
+            if (connected) {
+                status.classList.add('connected');
+                indicator.classList.add('connected');
+            } else {
+                status.classList.remove('connected');
+                indicator.classList.remove('connected');
+            }
+            
+            statusText.textContent = text;
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            if (game && game.canvas) {
+                // Keep canvas aspect ratio
+                const container = document.getElementById('container');
+                const maxWidth = window.innerWidth * 0.95;
+                const maxHeight = window.innerHeight * 0.95;
+                const aspectRatio = 1600 / 900;
+                
+                let width = maxWidth;
+                let height = width / aspectRatio;
+                
+                if (height > maxHeight) {
+                    height = maxHeight;
+                    width = height * aspectRatio;
+                }
+                
+                game.canvas.style.width = width + 'px';
+                game.canvas.style.height = height + 'px';
+            }
+        });
+        
+        // Prevent accidental page unload
+        window.addEventListener('beforeunload', (e) => {
+            if (game && game.running) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+    </script>
+</body>
+</html>

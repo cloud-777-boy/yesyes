@@ -1,0 +1,29 @@
+{
+  "name": "pixel-mage-arena-server",
+  "version": "1.0.0",
+  "description": "Multiplayer server for Pixel Mage Arena - a pixel physics destruction game",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "keywords": [
+    "game",
+    "multiplayer",
+    "websocket",
+    "physics",
+    "pixel",
+    "destruction"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
