@@ -262,7 +262,7 @@
             </div>
             
             <div id="multiplayerMenu" class="menu-section hidden">
-                <input type="text" id="serverUrl" placeholder="Server URL (ws://localhost:8080)" value="ws://localhost:8080">
+                <input type="text" id="serverUrl" placeholder="Server URL" value="">
                 <button onclick="startMultiplayer()">🔗 CONNECT</button>
                 <button onclick="hideMultiplayerMenu()">← BACK</button>
             </div>
@@ -338,6 +338,22 @@
         let game = null;
         let network = null;
         let input = null;
+        
+        function getDefaultWebSocketUrl() {
+            const hostname = window.location.hostname;
+            const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+            
+            if (isLocalhost) {
+                return 'ws://localhost:8080';
+            } else {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                return `${protocol}//${hostname}:8080`;
+            }
+        }
+        
+        window.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('serverUrl').value = getDefaultWebSocketUrl();
+        });
         
         function startSinglePlayer() {
             const canvas = document.getElementById('gameCanvas');
