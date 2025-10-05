@@ -64,6 +64,8 @@ class GameEngine {
         // Initialize terrain
         this.terrain = new Terrain(this.width, this.height);
         this.terrain.generate();
+        const fluids = this.terrain.consumeInitialFluids();
+        this.spawnInitialFluids(fluids);
         this.sandChunks.clear();
         this.sandParticleCount = 0;
         this.sandUpdateCursor = 0;
@@ -309,6 +311,51 @@ class GameEngine {
         this.addSandToChunk(sand, newChunkX, newChunkY);
     }
 
+    spawnInitialFluids(fluids) {
+        if (!Array.isArray(fluids)) return;
+        for (let i = 0; i < fluids.length; i++) {
+            if (this.sandParticleCount >= this.maxSandParticles) break;
+            const { x, y, material } = fluids[i];
+            const sand = this.getSandParticleFromPool();
+            const colorObj = this.terrain.getMaterialColor(material, x, y);
+            const color = colorObj ? colorObj.hex : '#ffffff';
+            sand.init(x, y, material, color, 0);
+            const chunkX = Math.floor(x / this.chunkSize);
+            const chunkY = Math.floor(y / this.chunkSize);
+            this.addSandToChunk(sand, chunkX, chunkY);
+            this.sandParticleCount++;
+        }
+    }
+
+    findSandParticleAt(x, y) {
+        const chunkSize = this.chunkSize;
+        const totalChunksX = Math.ceil(this.width / chunkSize);
+        const maxChunkY = Math.ceil(this.height / chunkSize) - 1;
+        let chunkX = Math.floor(x / chunkSize);
+        let chunkY = Math.floor(y / chunkSize);
+        chunkY = Math.max(0, Math.min(maxChunkY, chunkY));
+        chunkX = ((chunkX % totalChunksX) + totalChunksX) % totalChunksX;
+        const key = `${chunkX}|${chunkY}`;
+        const list = this.sandChunks.get(key);
+        if (!list) return null;
+        const wrappedX = wrapHorizontal(x, this.width) | 0;
+        for (let i = 0; i < list.length; i++) {
+            const sand = list[i];
+            if (!sand.dead && sand.x === wrappedX && sand.y === y) {
+                return sand;
+            }
+        }
+        return null;
+    }
+
+    markSandParticleAsConverted(sand, material) {
+        if (!sand) return;
+        const x = wrapHorizontal(sand.x, this.width) | 0;
+        const y = sand.y;
+        this.terrain.setPixel(x, y, material);
+        sand.dead = true;
+    }
+
     updateSand(dt) {
         const total = this.activeSandLookup.length;
         if (total === 0) {
@@ -354,7 +401,7 @@ class GameEngine {
 
         this.sandUpdateCursor = (this.sandUpdateCursor + updates) % total;
 
-        for (let i = 0; i < this.activeSandLists.length; i++) {
+        for (let i = this.activeSandLists.length - 1; i >= 0; i--) {
             const list = this.activeSandLists[i];
             let j = list.length;
             while (j--) {
@@ -588,13 +635,16 @@ class GameEngine {
     }
 
     serializeSandChunks(activeOnly = false) {
-        const result = [];
+        const payload = {
+            chunkSize: this.chunkSize,
+            chunks: []
+        };
 
         if (activeOnly) {
             if (this.activeSandLists.length === 0) {
                 for (const [key, list] of this.sandChunks.entries()) {
                     if (!list.length) continue;
-                    result.push({
+                    payload.chunks.push({
                         key,
                         particles: list.map(p => ({ x: p.x, y: p.y, material: p.material, color: p.color }))
                     });
@@ -604,7 +654,7 @@ class GameEngine {
                     const key = this.activeSandChunkKeys[i];
                     const list = this.activeSandLists[i];
                     if (!list.length) continue;
-                    result.push({
+                    payload.chunks.push({
                         key,
                         particles: list.map(p => ({ x: p.x, y: p.y, material: p.material, color: p.color }))
                     });
@@ -613,14 +663,14 @@ class GameEngine {
         } else {
             for (const [key, list] of this.sandChunks.entries()) {
                 if (!list.length) continue;
-                result.push({
+                payload.chunks.push({
                     key,
                     particles: list.map(p => ({ x: p.x, y: p.y, material: p.material, color: p.color }))
                 });
             }
         }
 
-        return result;
+        return payload.chunks.length ? payload : null;
     }
 
     clearSandChunks() {
@@ -639,11 +689,16 @@ class GameEngine {
     loadSandChunks(snapshot) {
         this.clearSandChunks();
 
+        if (snapshot.chunkSize && snapshot.chunkSize !== this.chunkSize) {
+            this.chunkSize = snapshot.chunkSize;
+        }
+
         const totalChunksX = Math.ceil(this.width / this.chunkSize);
         const maxChunkY = Math.ceil(this.height / this.chunkSize) - 1;
+        const entries = snapshot.chunks || [];
 
-        for (let i = 0; i < snapshot.length; i++) {
-            const entry = snapshot[i];
+        for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i];
             if (!entry || !entry.key || !Array.isArray(entry.particles)) continue;
             const [chunkXString, chunkYString] = entry.key.split('|');
             let chunkX = parseInt(chunkXString, 10);
@@ -680,15 +735,26 @@ class GameEngine {
     }
     
     getState() {
-        return {
+        const sandSnapshot = this.serializeSandChunks(true);
+        const terrainMods = this.terrain.getModifications();
+
+        const state = {
             tick: this.tick,
             players: Array.from(this.players.values()).map(p => p.serialize()),
             projectiles: this.projectiles.map(p => p.serialize()),
             sand: this.sandParticleCount,
-            sandChunks: this.serializeSandChunks(true),
-            chunkSize: this.chunkSize,
-            terrain: this.terrain.getModifications()
+            chunkSize: this.chunkSize
         };
+
+        if (sandSnapshot) {
+            state.sandChunks = sandSnapshot;
+        }
+
+        if (terrainMods) {
+            state.terrain = terrainMods;
+        }
+
+        return state;
     }
     
     setState(state) {
@@ -714,10 +780,14 @@ class GameEngine {
             this.chunkSize = state.chunkSize;
         }
 
-        if (Array.isArray(state.sandChunks) && state.sandChunks.length) {
+        if (state.sandChunks && Array.isArray(state.sandChunks.chunks) && state.sandChunks.chunks.length) {
             this.loadSandChunks(state.sandChunks);
-        } else if (typeof state.sand === 'number' && state.sand === 0) {
+        } else if ((state.sandChunks && (!Array.isArray(state.sandChunks.chunks) || state.sandChunks.chunks.length === 0)) || (typeof state.sand === 'number' && state.sand === 0)) {
             this.clearSandChunks();
+        }
+
+        if (state.terrain) {
+            this.terrain.applyModifications(state.terrain);
         }
 
         // Sync projectiles and sand if needed

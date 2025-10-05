@@ -80,6 +80,16 @@ This is a multiplayer pixel destruction game featuring procedural terrain genera
 
 ## Recent Changes
 
+**2025-10-05**: Liquid physics improvements
+- Liquids (water/lava) now remain dynamic forever using falling sand physics
+- Removed settling behavior - liquids never convert to static terrain
+- Maintains continuous flow and spreading behavior
+
+**2025-10-05**: Multiplayer movement smoothing
+- Implemented smooth interpolation for remote players (30% blend rate)
+- Local player reconciliation uses gradual correction instead of snapping
+- Eliminates jerky/rubber-banding movement in multiplayer
+
 **2025-10-05**: Fixed multiplayer hovering bug
 - Removed hardcoded server-side ground collision at y=300
 - Changed to client-authoritative physics for terrain collision  

@@ -10,6 +10,8 @@ A high-performance JavaScript game engine inspired by Cortex Command and Falling
 - **Substances System**: Grass, dirt, stone, and precious ores each have unique durability and behavior
 - **Massive Worlds**: Optimized pipeline supports 11k+ pixel wide maps without sacrificing framerate
 - **Chunked Simulation**: Physics only runs in buffered active chunks around players for huge performance gains
+- **Dynamic Liquids**: Water and lava flow with falling-sand physics and interact to solidify into stone
+- **Procedural Caves**: Dive through narrow tubes, large basins, subterranean lakes, and lava pools carved throughout the map
 - **Procedural Generation**: Terrain generated using Perlin-like noise with caves and layers
 - **Deterministic Physics**: Fixed timestep ensures consistent behavior across all clients
 - **Object Pooling**: Optimized memory management for sand and effect particles

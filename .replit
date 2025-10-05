@@ -37,6 +37,10 @@ externalPort = 80
 localPort = 8080
 externalPort = 8080
 
+[[ports]]
+localPort = 45629
+externalPort = 3000
+
 [deployment]
 deploymentTarget = "vm"
 run = ["node", "app.js"]

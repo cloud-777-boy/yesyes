@@ -46,6 +46,8 @@ class Terrain {
         this.GOLD = 5;
         this.SILVER = 6;
         this.IRON = 7;
+        this.WATER = 8;
+        this.LAVA = 9;
         
         // Base palette fallback
         this.colors = {
@@ -66,18 +68,22 @@ class Terrain {
             [this.GOLD]: ['#facc15', '#fbbf24', '#fbbf0f', '#f5d547'],
             [this.SILVER]: ['#cbd5f5', '#d1d5db', '#bfc6d3', '#e0e5ef'],
             [this.IRON]: ['#8d99a6', '#9ca3af', '#7d8895', '#a8b1bd'],
-            [this.BEDROCK]: ['#111827', '#1f2937', '#0f172a', '#1a2333']
+            [this.BEDROCK]: ['#111827', '#1f2937', '#0f172a', '#1a2333'],
+            [this.WATER]: ['#1e3a8a', '#2563eb', '#1d4ed8', '#3b82f6'],
+            [this.LAVA]: ['#dc2626', '#f97316', '#f43f5e', '#fb923c']
         };
 
         this.substances = {
-            [this.EMPTY]: { name: 'empty', durability: 0, density: 0, degradeTo: null, raiseOnContact: false },
-            [this.GRASS]: { name: 'grass', durability: 1, density: 1, degradeTo: this.EMPTY, raiseOnContact: true },
-            [this.DIRT]: { name: 'dirt', durability: 2, density: 2, degradeTo: this.GRASS, raiseOnContact: true },
-            [this.STONE]: { name: 'stone', durability: 4, density: 3, degradeTo: this.DIRT, raiseOnContact: true },
-            [this.GOLD]: { name: 'gold', durability: 5, density: 4, degradeTo: this.STONE, raiseOnContact: true },
-            [this.SILVER]: { name: 'silver', durability: 6, density: 4, degradeTo: this.STONE, raiseOnContact: true },
-            [this.IRON]: { name: 'iron', durability: 7, density: 5, degradeTo: this.STONE, raiseOnContact: true },
-            [this.BEDROCK]: { name: 'bedrock', durability: Infinity, density: 10, degradeTo: null, raiseOnContact: false }
+            [this.EMPTY]: { name: 'empty', durability: 0, density: 0, degradeTo: null, raiseOnContact: false, type: 'empty' },
+            [this.GRASS]: { name: 'grass', durability: 1, density: 1, degradeTo: this.EMPTY, raiseOnContact: true, type: 'solid' },
+            [this.DIRT]: { name: 'dirt', durability: 2, density: 2, degradeTo: this.GRASS, raiseOnContact: true, type: 'granular' },
+            [this.STONE]: { name: 'stone', durability: 4, density: 3, degradeTo: this.DIRT, raiseOnContact: true, type: 'solid' },
+            [this.GOLD]: { name: 'gold', durability: 5, density: 4, degradeTo: this.STONE, raiseOnContact: true, type: 'solid' },
+            [this.SILVER]: { name: 'silver', durability: 6, density: 4, degradeTo: this.STONE, raiseOnContact: true, type: 'solid' },
+            [this.IRON]: { name: 'iron', durability: 7, density: 5, degradeTo: this.STONE, raiseOnContact: true, type: 'solid' },
+            [this.BEDROCK]: { name: 'bedrock', durability: Infinity, density: 10, degradeTo: null, raiseOnContact: false, type: 'solid' },
+            [this.WATER]: { name: 'water', durability: 0, density: 1, degradeTo: null, raiseOnContact: false, type: 'liquid', mixWith: this.LAVA, mixResult: this.STONE },
+            [this.LAVA]: { name: 'lava', durability: 0, density: 1, degradeTo: null, raiseOnContact: false, type: 'liquid', mixWith: this.WATER, mixResult: this.STONE }
         };
         
         // Render cache
@@ -92,6 +98,23 @@ class Terrain {
         this.dirtyBounds = null;
         this.isLittleEndian = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
         this.fullRedrawNeeded = true;
+        this.chunkSize = 64;
+        this.chunkWidth = Math.ceil(width / this.chunkSize);
+        this.chunkHeight = Math.ceil(height / this.chunkSize);
+        this.modifiedChunks = new Map();
+        this.suppressModificationTracking = false;
+        this.caves = [];
+        this.initialFluids = [];
+        this.generating = false;
+    }
+
+    setChunkSize(size) {
+        const newSize = Math.max(1, Math.floor(size));
+        if (newSize === this.chunkSize) return;
+        this.chunkSize = newSize;
+        this.chunkWidth = Math.ceil(this.width / this.chunkSize);
+        this.chunkHeight = Math.ceil(this.height / this.chunkSize);
+        this.modifiedChunks.clear();
     }
     
     generate() {
@@ -100,6 +123,10 @@ class Terrain {
         if (this.surfaceCache) {
             this.surfaceCache.fill(this.height);
         }
+        this.caves.length = 0;
+        this.initialFluids.length = 0;
+        this.suppressModificationTracking = true;
+        this.generating = true;
 
         // Generate base terrain height
         for (let x = 0; x < this.width; x++) {
@@ -124,14 +151,19 @@ class Terrain {
                         this.setPixel(x, y, this.DIRT);
                     }
                 } else {
-                    // Stone layer with ores and caves
+                    // Stone layer with ores, liquids, and caves
                     const caveNoise1 = noise.noise2D(x * 0.02, y * 0.02);
                     const caveNoise2 = noise.noise2D(x * 0.03 + 100, y * 0.03 + 100);
                     const cave = caveNoise1 * caveNoise2;
                     const oreNoise = noise.noise2D(x * 0.04 + 200, y * 0.04 + 200);
+                    const liquidNoise = noise.noise2D(x * 0.01 + 300, y * 0.01 + 300);
 
                     if (cave > 0.15) {
                         this.setPixel(x, y, this.EMPTY);
+                    } else if (liquidNoise < -0.7 && depth > 30) {
+                        this.setPixel(x, y, this.WATER);
+                    } else if (liquidNoise > 0.7 && depth > 60) {
+                        this.setPixel(x, y, this.LAVA);
                     } else if (oreNoise > 0.55 && depth > 40) {
                         this.setPixel(x, y, this.IRON);
                     } else if (oreNoise < -0.6 && depth > 60) {
@@ -149,7 +181,11 @@ class Terrain {
                 }
             }
         }
-        
+
+        this.generateCaves();
+        this.generateSurfaceLakes();
+        this.generateSurfaceLakes();
+
         this.dirty = true;
         this.dirtyBounds = {
             minX: 0,
@@ -158,23 +194,95 @@ class Terrain {
             maxY: this.height - 1
         };
         this.fullRedrawNeeded = true;
+        this.modifiedChunks.clear();
+        this.suppressModificationTracking = false;
+        this.generating = false;
     }
-    
+
+    generateSurfaceLakes() {
+        if (this.height < 20) return;
+        let seed = Math.max(1, Math.abs(Math.floor(Math.sin(this.width * 0.5123 + this.height * 0.913) * 100000)));
+        const rand = () => {
+            const value = Math.sin(seed++) * 43758.5453123;
+            return value - Math.floor(value);
+        };
+
+        const lakeCount = 1 + Math.floor(rand() * 3);
+        const attempts = lakeCount * 4;
+        let created = 0;
+
+        for (let i = 0; i < attempts && created < lakeCount; i++) {
+            const cx = Math.floor(rand() * this.width);
+            const surfaceY = this.findSurfaceY(cx);
+            if (surfaceY < 4 || surfaceY > this.height - 20) continue;
+            const radiusX = 14 + rand() * 18;
+            const radiusY = 5 + rand() * 9;
+            const basinTop = surfaceY + 1;
+            const basinBottom = Math.min(this.height - 4, surfaceY + radiusY * 2.0);
+
+            for (let y = basinTop; y <= basinBottom; y++) {
+                for (let x = Math.floor(cx - radiusX); x <= Math.floor(cx + radiusX); x++) {
+                    const wrappedX = Math.floor(wrapHorizontal(x, this.width));
+                    const dx = (wrappedX - cx) / radiusX;
+                    const dy = (y - surfaceY) / radiusY;
+                    if (dx * dx + dy * dy <= 1.2) {
+                        this.setPixel(wrappedX, y, this.EMPTY);
+                    }
+                }
+            }
+
+            const fillStart = Math.floor(surfaceY + radiusY * 0.25);
+            const fillEnd = Math.min(this.height - 4, surfaceY + radiusY * 1.1);
+            for (let y = fillStart; y <= fillEnd; y++) {
+                for (let x = Math.floor(cx - radiusX * 0.9); x <= Math.floor(cx + radiusX * 0.9); x++) {
+                    const wrappedX = Math.floor(wrapHorizontal(x, this.width));
+                    const dx = (wrappedX - cx) / (radiusX * 0.9);
+                    const dy = (y - fillStart) / (radiusY * 0.8);
+                    if (dx * dx + dy * dy <= 1.0) {
+                        this.setPixel(wrappedX, y, this.WATER);
+                    }
+                }
+            }
+            created++;
+        }
+    }
+
+    findSurfaceY(x) {
+        const wrappedX = Math.floor(wrapHorizontal(x, this.width));
+        for (let y = 0; y < this.height - 2; y++) {
+            if (this.pixels[y * this.width + wrappedX] !== this.EMPTY) {
+                return y;
+            }
+        }
+        return this.height - 3;
+    }
+
     setPixel(x, y, material) {
         if (y < 0 || y >= this.height) return;
         const wrappedX = Math.floor(wrapHorizontal(x, this.width));
         const index = y * this.width + wrappedX;
         const previous = this.pixels[index];
-        if (previous === material) return;
 
-        this.pixels[index] = material;
+        const isFluid = material === this.WATER || material === this.LAVA;
+        let nextMaterial = material;
+        if (this.generating && isFluid) {
+            this.initialFluids.push({ x: wrappedX, y, material });
+            nextMaterial = this.EMPTY;
+        }
+
+        if (previous === nextMaterial) return;
+
+        this.pixels[index] = nextMaterial;
 
         if (this.pixelColors32) {
-            const color = this.getMaterialColor(material, wrappedX, y);
+            const color = this.getMaterialColor(nextMaterial, wrappedX, y);
             this.pixelColors32[index] = color ? color.rgba32 : 0;
         }
 
-        this.updateSurfaceColumn(wrappedX, y, material, previous);
+        this.updateSurfaceColumn(wrappedX, y, nextMaterial, previous);
+        if (!this.suppressModificationTracking) {
+            this.markChunkModified(wrappedX, y);
+        }
     }
 
     getPixel(x, y) {
@@ -185,7 +293,10 @@ class Terrain {
     
     isSolid(x, y) {
         const pixel = this.getPixel(Math.floor(x), Math.floor(y));
-        return pixel !== this.EMPTY;
+        if (pixel === this.EMPTY) return false;
+        const props = this.substances[pixel];
+        if (props && props.type === 'liquid') return false;
+        return true;
     }
 
     isGranular(x, y) {
@@ -509,8 +620,303 @@ class Terrain {
     }
 
     getModifications() {
-        // For network sync - return list of modified pixels
-        return [];
+        if (this.modifiedChunks.size === 0) {
+            return null;
+        }
+
+        const result = {
+            chunkSize: this.chunkSize,
+            chunks: []
+        };
+
+        for (const [key, data] of this.modifiedChunks.entries()) {
+            const pixels = [];
+            for (const [localIndex, material] of data.pixels.entries()) {
+                pixels.push({ localIndex, material });
+            }
+            if (pixels.length > 0) {
+                result.chunks.push({ key, pixels });
+            }
+            data.pixels.clear();
+        }
+        this.modifiedChunks.clear();
+        return result.chunks.length ? result : null;
+    }
+
+    markChunkModified(x, y) {
+        const chunkX = Math.floor(x / this.chunkSize);
+        const chunkY = Math.floor(y / this.chunkSize);
+        const key = `${chunkX}|${chunkY}`;
+        let record = this.modifiedChunks.get(key);
+        if (!record) {
+            record = { pixels: new Map() };
+            this.modifiedChunks.set(key, record);
+        }
+        let localX = x % this.chunkSize;
+        let localY = y % this.chunkSize;
+        if (localX < 0) localX += this.chunkSize;
+        if (localY < 0) localY += this.chunkSize;
+        const localIndex = localY * this.chunkSize + localX;
+        record.pixels.set(localIndex, this.pixels[y * this.width + x]);
+    }
+
+    applyModifications(snapshot) {
+        if (!snapshot) return;
+        const chunkSize = snapshot.chunkSize || this.chunkSize;
+        this.setChunkSize(chunkSize);
+        const chunks = snapshot.chunks || [];
+        this.suppressModificationTracking = true;
+        for (let i = 0; i < chunks.length; i++) {
+            const entry = chunks[i];
+            if (!entry || !entry.key || !Array.isArray(entry.pixels)) continue;
+            const [chunkXString, chunkYString] = entry.key.split('|');
+            const chunkX = parseInt(chunkXString, 10);
+            const chunkY = parseInt(chunkYString, 10);
+            if (Number.isNaN(chunkX) || Number.isNaN(chunkY)) continue;
+            for (let j = 0; j < entry.pixels.length; j++) {
+                const pixelData = entry.pixels[j];
+                if (!pixelData) continue;
+                const localIndex = pixelData.localIndex;
+                const material = pixelData.material;
+                if (typeof localIndex !== 'number' || typeof material !== 'number') continue;
+                const localX = localIndex % chunkSize;
+                const localY = Math.floor(localIndex / chunkSize);
+                const worldX = chunkX * chunkSize + localX;
+                const worldY = chunkY * chunkSize + localY;
+                const wrappedX = Math.floor(wrapHorizontal(worldX, this.width));
+                if (worldY < 0 || worldY >= this.height) continue;
+                this.setPixel(wrappedX, worldY, material);
+            }
+        }
+        this.suppressModificationTracking = false;
+    }
+
+    consumeInitialFluids() {
+        const fluids = this.initialFluids.slice();
+        this.initialFluids.length = 0;
+        return fluids;
+    }
+
+    generateCaves() {
+        const area = this.width * this.height;
+        const targetCaves = Math.max(6, Math.floor(area / 90000));
+        const caveNoise = new SimplexNoise(Math.random());
+        let randSeed = Math.max(1, Math.abs(Math.floor(Math.sin(this.width * 12.9898 + this.height * 78.233) * 100000)));
+        const rand = () => {
+            const value = Math.sin(randSeed++) * 43758.5453123;
+            return value - Math.floor(value);
+        };
+        const attempts = targetCaves * 3;
+        let created = 0;
+
+        for (let i = 0; i < attempts && created < targetCaves; i++) {
+            const cx = Math.floor(rand() * this.width);
+            const cy = Math.floor(this.height * 0.25 + rand() * this.height * 0.6);
+            if (cy >= this.height - 6) continue;
+
+            const roll = rand();
+            let subtype = 'tube';
+            if (roll > 0.8) subtype = 'basin';
+            if (roll > 0.9) subtype = 'lake';
+            if (roll > 0.96) subtype = 'lava_lake';
+
+            const cave = this.carveCave(cx, cy, subtype, caveNoise, rand);
+            if (cave) {
+                this.caves.push(cave);
+                created++;
+            }
+        }
+    }
+
+    carveCave(cx, cy, subtype, noise, rand = Math.random) {
+        const record = { subtype, nodes: [] };
+        const baseRadius = 6 + rand() * 6;
+        const clampY = (y) => Math.max(2, Math.min(this.height - 6, y));
+
+        const seedTunnel = (startX, startY, radius, noiseRef, randRef, depth = 0) => {
+            const length = (120 + randRef() * 160) * (depth === 0 ? 1 : 0.6);
+            let angle = randRef() * Math.PI * 2;
+            let x = startX;
+            let y = startY;
+            let prevBranch = 0;
+
+            for (let step = 0; step < length; step++) {
+                const radiusScale = radius * (0.7 + randRef() * 0.6);
+                this.carveBlob(Math.floor(x), Math.floor(y), radiusScale, radiusScale * 0.6);
+                record.nodes.push({ x, y, radius: radiusScale });
+
+                if (depth < 2 && step - prevBranch > 30 && randRef() > 0.78) {
+                    prevBranch = step;
+                    const branchAngle = angle + (randRef() - 0.5) * 1.2;
+                    const branchRadius = radius * (0.5 + randRef() * 0.4);
+                    const branchLength = length * 0.45;
+                    let branchX = x;
+                    let branchY = y;
+                    for (let b = 0; b < branchLength; b++) {
+                        const brScale = branchRadius * (0.6 + randRef() * 0.4);
+                        this.carveBlob(Math.floor(branchX), Math.floor(branchY), brScale, brScale * 0.6);
+                        record.nodes.push({ x: branchX, y: branchY, radius: brScale });
+                        branchX += Math.cos(branchAngle) * 2.5;
+                        branchY = clampY(branchY + Math.sin(branchAngle) * 2 + noiseRef.noise2D(branchX * 0.03, branchY * 0.03));
+                        if (branchX < 4 || branchX >= this.width - 4) break;
+                    }
+                }
+
+                angle += (randRef() - 0.5) * 0.4;
+                x += Math.cos(angle) * 3;
+                y = clampY(y + Math.sin(angle) * 2 + noiseRef.noise2D(x * 0.02, y * 0.02) * 2);
+                if (x < 4 || x >= this.width - 4) break;
+            }
+        };
+
+        if (subtype === 'tube') {
+            seedTunnel(cx, cy, baseRadius, noise, rand, 0);
+            return record;
+        }
+
+        const radius = baseRadius * (1.5 + rand());
+        const verticalRadius = radius * (0.7 + rand() * 0.5);
+        this.carveBlob(cx, cy, radius, verticalRadius);
+        record.nodes.push({ x: cx, y: cy, radius, verticalRadius });
+
+        const branchCount = 2 + Math.floor(rand() * 3);
+        for (let b = 0; b < branchCount; b++) {
+            const angle = rand() * Math.PI * 2;
+            const startX = cx + Math.cos(angle) * radius * 0.6;
+            const startY = clampY(cy + Math.sin(angle) * verticalRadius * 0.5);
+            seedTunnel(startX, startY, radius * (0.6 + rand() * 0.4), noise, rand, 1);
+        }
+
+        if (subtype === 'basin' || subtype === 'lake' || subtype === 'lava_lake') {
+            const floorY = Math.floor(cy + verticalRadius * 0.6);
+            const fillMaterial = subtype === 'lava_lake' ? this.LAVA : subtype === 'lake' ? this.WATER : this.EMPTY;
+            if (fillMaterial !== this.EMPTY) {
+                for (let y = floorY; y < Math.min(this.height - 3, floorY + Math.max(3, verticalRadius)); y++) {
+                    for (let x = Math.floor(cx - radius + 1); x <= Math.floor(cx + radius - 1); x++) {
+                        const dist = Math.sqrt((x - cx) ** 2 + ((y - cy) / verticalRadius) ** 2);
+                        if (dist <= 0.9) {
+                            this.setPixel(x, y, fillMaterial);
+                        }
+                    }
+                }
+            }
+        }
+
+        return record;
+    }
+
+    carveBlob(cx, cy, radiusX, radiusY) {
+        const minX = Math.floor(cx - radiusX - 2);
+        const maxX = Math.ceil(cx + radiusX + 2);
+        const minY = Math.floor(cy - radiusY - 2);
+        const maxY = Math.ceil(cy + radiusY + 2);
+
+        for (let y = minY; y <= maxY; y++) {
+            if (y < 1 || y >= this.height - 2) continue;
+            for (let x = minX; x <= maxX; x++) {
+                const wrappedX = Math.floor(wrapHorizontal(x, this.width));
+                const dx = (wrappedX - cx) / radiusX;
+                const dy = (y - cy) / radiusY;
+                if (dx * dx + dy * dy <= 1.0) {
+                    this.setPixel(wrappedX, y, this.EMPTY);
+                }
+            }
+        }
+    }
+
+    generateCaves() {
+        const area = this.width * this.height;
+        const targetCaves = Math.max(6, Math.floor(area / 90000));
+        const caveNoise = new SimplexNoise(Math.random());
+        let randSeed = Math.max(1, Math.abs(Math.floor(Math.sin(this.width * 12.9898 + this.height * 78.233) * 100000)));
+        const rand = () => {
+            const value = Math.sin(randSeed++) * 43758.5453123;
+            return value - Math.floor(value);
+        };
+        const attempts = targetCaves * 3;
+        let created = 0;
+
+        for (let i = 0; i < attempts && created < targetCaves; i++) {
+            const cx = Math.floor(rand() * this.width);
+            const cy = Math.floor(this.height * 0.25 + rand() * this.height * 0.6);
+            if (cy >= this.height - 6) continue;
+
+            const roll = rand();
+            let subtype = 'tube';
+            if (roll > 0.8) subtype = 'basin';
+            if (roll > 0.9) subtype = 'lake';
+            if (roll > 0.96) subtype = 'lava_lake';
+
+            const cave = this.carveCave(cx, cy, subtype, caveNoise, rand);
+            if (cave) {
+                this.caves.push(cave);
+                created++;
+            }
+        }
+    }
+
+    carveCave(cx, cy, subtype, noise, rand = Math.random) {
+        const record = { subtype, nodes: [] };
+        const baseRadius = 4 + rand() * 4;
+        const clampY = (y) => Math.max(2, Math.min(this.height - 6, y));
+
+        if (subtype === 'tube') {
+            const length = 60 + rand() * 140;
+            let angle = rand() * Math.PI * 2;
+            let x = cx;
+            let y = cy;
+            for (let step = 0; step < length; step++) {
+                const radius = baseRadius * (0.7 + rand() * 0.6);
+                this.carveBlob(Math.floor(x), Math.floor(y), radius, radius * 0.6);
+                record.nodes.push({ x, y, radius });
+                angle += (rand() - 0.5) * 0.4;
+                x += Math.cos(angle) * 3;
+                y = clampY(y + Math.sin(angle) * 2 + noise.noise2D(x * 0.02, y * 0.02) * 2);
+                if (x < 4 || x >= this.width - 4) break;
+            }
+            return record;
+        }
+
+        const radius = baseRadius * (1.4 + rand());
+        const verticalRadius = radius * (0.6 + rand() * 0.6);
+        this.carveBlob(cx, cy, radius, verticalRadius);
+        record.nodes.push({ x: cx, y: cy, radius, verticalRadius });
+
+        if (subtype === 'basin' || subtype === 'lake' || subtype === 'lava_lake') {
+            const floorY = Math.floor(cy + verticalRadius * 0.6);
+            const fillMaterial = subtype === 'lava_lake' ? this.LAVA : subtype === 'lake' ? this.WATER : this.EMPTY;
+            if (fillMaterial !== this.EMPTY) {
+                for (let y = floorY; y < Math.min(this.height - 3, floorY + Math.max(3, verticalRadius)); y++) {
+                    for (let x = Math.floor(cx - radius + 1); x <= Math.floor(cx + radius - 1); x++) {
+                        const dist = Math.sqrt((x - cx) ** 2 + ((y - cy) / verticalRadius) ** 2);
+                        if (dist <= 0.9) {
+                            this.setPixel(x, y, fillMaterial);
+                        }
+                    }
+                }
+            }
+        }
+
+        return record;
+    }
+
+    carveBlob(cx, cy, radiusX, radiusY) {
+        const minX = Math.floor(cx - radiusX - 2);
+        const maxX = Math.ceil(cx + radiusX + 2);
+        const minY = Math.floor(cy - radiusY - 2);
+        const maxY = Math.ceil(cy + radiusY + 2);
+
+        for (let y = minY; y <= maxY; y++) {
+            if (y < 1 || y >= this.height - 2) continue;
+            for (let x = minX; x <= maxX; x++) {
+                const wrappedX = Math.floor(wrapHorizontal(x, this.width));
+                const dx = (wrappedX - cx) / radiusX;
+                const dy = (y - cy) / radiusY;
+                if (dx * dx + dy * dy <= 1.0) {
+                    this.setPixel(wrappedX, y, this.EMPTY);
+                }
+            }
+        }
     }
 
     markDirtyRegion(minX, minY, maxX, maxY) {

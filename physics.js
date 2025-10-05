@@ -104,6 +104,10 @@ class SandParticle {
     update(engine, occupancy, dt) {
         if (this.dead) return;
 
+        const terrain = engine.terrain;
+        const props = terrain.substances[this.material] || {};
+        const isLiquid = props.type === 'liquid';
+
         // Remove current position from occupancy while moving
         const previousKey = this.key();
         occupancy.delete(previousKey);
@@ -136,9 +140,17 @@ class SandParticle {
             }
         }
 
+        if (isLiquid) {
+            const lateral = randomBias
+                ? [{ dx: -1, dy: 0 }, { dx: 1, dy: 0 }]
+                : [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }];
+            moveOrder.push(...lateral);
+        }
+
         let moved = false;
         for (const move of moveOrder) {
             if (this.tryMove(engine, occupancy, move.dx, move.dy)) {
+                this.restTime = 0;
                 moved = true;
                 break;
             }
@@ -153,8 +165,22 @@ class SandParticle {
                 this.restTime += timeStep * 0.5;
             }
 
-            if (this.restTime >= this.settleDelay && this.isSupported(engine)) {
-                this.settle(engine);
+            if (isLiquid) {
+                if (this.tryMix(engine, props)) {
+                    return;
+                }
+                if (this.tryLiquidSpread(engine, occupancy, randomBias, timeStep)) {
+                    moved = true;
+                }
+            }
+
+            if (!moved) {
+                if (isLiquid) {
+                    // Liquids remain dynamic - never settle into static terrain
+                    this.restTime = Math.max(0, this.restTime - timeStep * 0.3);
+                } else if (this.restTime >= this.settleDelay && this.isSupported(engine)) {
+                    this.settle(engine);
+                }
             }
         }
 
@@ -163,12 +189,70 @@ class SandParticle {
         }
 
         if (!this.dead) {
-            const colorObj = engine.terrain.getMaterialColor(this.material, this.x, this.y);
+            const colorObj = terrain.getMaterialColor(this.material, this.x, this.y);
             if (colorObj) {
                 this.color = colorObj.hex;
             }
             occupancy.add(this.key());
         }
+    }
+
+    tryLiquidSpread(engine, occupancy, randomBias, timeStep) {
+        const lateralOrder = randomBias ? [-1, 1] : [1, -1];
+        for (let i = 0; i < lateralOrder.length; i++) {
+            const dx = lateralOrder[i];
+            if (this.canOccupy(engine, occupancy, this.x + dx, this.y)) {
+                const wrappedX = wrapValue(this.x + dx, engine.width) | 0;
+                this.x = wrappedX;
+                this.restTime = Math.max(0, this.restTime - timeStep * 0.5);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    tryMix(engine, props) {
+        if (!props || !props.mixWith) return false;
+        const terrain = engine.terrain;
+        const mixTargets = Array.isArray(props.mixWith) ? props.mixWith : [props.mixWith];
+        const mixResult = props.mixResult || terrain.STONE;
+        const offsets = [
+            [0, 1],
+            [1, 0],
+            [-1, 0],
+            [0, -1]
+        ];
+
+        for (let i = 0; i < offsets.length; i++) {
+            const dx = offsets[i][0];
+            const dy = offsets[i][1];
+            const worldX = wrapValue(this.x + dx, engine.width) | 0;
+            const worldY = this.y + dy;
+            if (worldY < 0 || worldY >= engine.height) continue;
+
+            const terrainMaterial = terrain.getPixel(worldX, worldY);
+            if (mixTargets.includes(terrainMaterial)) {
+                terrain.setPixel(worldX, worldY, mixResult);
+                this.settleAsMaterial(engine, mixResult);
+                return true;
+            }
+
+            const otherSand = engine.findSandParticleAt(worldX, worldY);
+            if (otherSand && !otherSand.dead && mixTargets.includes(otherSand.material)) {
+                engine.markSandParticleAsConverted(otherSand, mixResult);
+                this.settleAsMaterial(engine, mixResult);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    settleAsMaterial(engine, material) {
+        const x = wrapValue(this.x, engine.width) | 0;
+        const y = this.y;
+        engine.terrain.setPixel(x, y, material);
+        this.dead = true;
     }
 
     isSupported(engine) {
