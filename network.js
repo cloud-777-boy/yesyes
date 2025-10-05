@@ -121,7 +121,19 @@ class NetworkManager {
             
             const player = this.engine.players.get(pData.id);
             if (player) {
-                player.deserialize(pData);
+                // Store server state for interpolation
+                if (!player.serverState) {
+                    player.serverState = { x: pData.x, y: pData.y };
+                }
+                player.lastServerState = { ...player.serverState };
+                player.serverState = { x: pData.x, y: pData.y, vx: pData.vx, vy: pData.vy };
+                player.serverStateTime = Date.now();
+                
+                // Update non-position data immediately
+                player.health = pData.health;
+                player.alive = pData.alive;
+                player.aimAngle = pData.aimAngle;
+                player.selectedSpell = pData.selectedSpell;
             }
         }
         
@@ -146,11 +158,12 @@ class NetworkManager {
         if (!localPlayer) return;
         
         // Check if local prediction diverged from server
-        const dx = Math.abs(localPlayer.x - serverState.x);
-        const dy = Math.abs(localPlayer.y - serverState.y);
+        const dx = localPlayer.x - serverState.x;
+        const dy = localPlayer.y - serverState.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
         
-        if (dx > 5 || dy > 5) {
-            // Significant divergence, snap to server state
+        if (distance > 30) {
+            // Large divergence, snap to server state
             localPlayer.deserialize(serverState);
             
             // Re-apply pending inputs
@@ -159,6 +172,11 @@ class NetworkManager {
                     this.applyInput(localPlayer, input);
                 }
             }
+        } else if (distance > 2) {
+            // Small divergence, smoothly interpolate toward server state
+            const blend = 0.2; // 20% toward server state per update
+            localPlayer.x += dx * -blend;
+            localPlayer.y += dy * -blend;
         }
         
         // Remove acknowledged inputs
@@ -270,6 +288,38 @@ class NetworkManager {
     
     getLatency() {
         return this.latency;
+    }
+    
+    interpolateRemotePlayers() {
+        const now = Date.now();
+        const interpolationSpeed = 0.3; // How quickly to blend toward server state
+        
+        for (const [id, player] of this.engine.players.entries()) {
+            // Skip local player
+            if (id === this.playerId) continue;
+            
+            // Interpolate toward server state if available
+            if (player.serverState && player.lastServerState) {
+                const timeSinceUpdate = now - (player.serverStateTime || now);
+                
+                // Interpolate position smoothly
+                if (timeSinceUpdate < 200) { // Only interpolate for recent updates
+                    const dx = player.serverState.x - player.x;
+                    const dy = player.serverState.y - player.y;
+                    
+                    player.x += dx * interpolationSpeed;
+                    player.y += dy * interpolationSpeed;
+                    
+                    // Also interpolate velocity for smoother prediction
+                    if (player.serverState.vx !== undefined) {
+                        player.vx = player.serverState.vx;
+                    }
+                    if (player.serverState.vy !== undefined) {
+                        player.vy = player.serverState.vy;
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -462,6 +462,8 @@
             
             if (network) {
                 document.getElementById('ping').textContent = network.getLatency() + 'ms';
+                // Interpolate remote players for smooth movement
+                network.interpolateRemotePlayers();
             }
             
             // Update input
