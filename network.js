@@ -30,26 +30,34 @@ class NetworkManager {
     
     connect(url) {
         this.serverUrl = url;
-        this.socket = new WebSocket(url);
+        console.log(`[NetworkManager] Attempting to connect to: ${url}`);
         
-        this.socket.onopen = () => {
-            console.log('Connected to server');
-            this.connected = true;
-            this.send({ type: 'join' });
-        };
-        
-        this.socket.onclose = () => {
-            console.log('Disconnected from server');
-            this.connected = false;
-        };
-        
-        this.socket.onerror = (error) => {
-            console.error('WebSocket error:', error);
-        };
-        
-        this.socket.onmessage = (event) => {
-            this.handleMessage(JSON.parse(event.data));
-        };
+        try {
+            this.socket = new WebSocket(url);
+            
+            this.socket.onopen = () => {
+                console.log('[NetworkManager] ✅ Connected to server successfully');
+                this.connected = true;
+                this.send({ type: 'join' });
+            };
+            
+            this.socket.onclose = (event) => {
+                console.log(`[NetworkManager] Disconnected from server (code: ${event.code}, reason: ${event.reason || 'none'})`);
+                this.connected = false;
+            };
+            
+            this.socket.onerror = (error) => {
+                console.error('[NetworkManager] ❌ WebSocket error:', error);
+                console.error('[NetworkManager] URL attempted:', this.serverUrl);
+            };
+            
+            this.socket.onmessage = (event) => {
+                this.handleMessage(JSON.parse(event.data));
+            };
+        } catch (error) {
+            console.error('[NetworkManager] ❌ Failed to create WebSocket:', error);
+            throw error;
+        }
     }
     
     disconnect() {
