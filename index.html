@@ -190,14 +190,8 @@
             <h2>Multiplayer Destruction Game</h2>
             
             <div class="menu-section">
-                <button id="btnSinglePlayer" onclick="startSinglePlayer()">
-                    🎮 SINGLEPLAYER
-                </button>
-            </div>
-            
-            <div class="menu-section">
-                <button id="btnMultiplayer" onclick="showMultiplayerMenu()" class="secondary">
-                    🌐 MULTIPLAYER
+                <button id="btnMultiplayer" onclick="showMultiplayerMenu()">
+                    🌐 PLAY
                 </button>
             </div>
 
@@ -490,51 +484,12 @@
             updateIOSInstallHint();
         });
 
-        function startSinglePlayer() {
-            const canvas = document.getElementById('gameCanvas');
-            resizeCanvasToViewport();
-
-            if (game && game.running) {
-                game.stop();
-            }
-            
-            // Initialize game
-            const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
-            game = new GameEngine(canvas, true, { seed });
-            game.init();
-            game.onCanvasResized();
-            
-            // Add local player
-            const playerId = 'player-' + Math.random().toString(36).substr(2, 9);
-            game.playerId = playerId;
-            game.addPlayer(playerId, game.width / 2, 100);
-            
-            // Setup input
-            input = new InputManager(canvas, game, null);
-            network = null;
-            
-            // Hide menu, show HUD
-            document.getElementById('menu').classList.add('hidden');
-            
-            // Start game loop
-            game.start();
-            
-            // Update HUD
-            if (!window.__pmaHudInterval) {
-                window.__pmaHudInterval = setInterval(updateHUD, 100);
-            }
-            
-            console.log('Singleplayer game started!');
-        }
-        
         function showMultiplayerMenu() {
-            document.getElementById('btnSinglePlayer').classList.add('hidden');
             document.getElementById('btnMultiplayer').classList.add('hidden');
             document.getElementById('multiplayerMenu').classList.remove('hidden');
         }
         
         function hideMultiplayerMenu() {
-            document.getElementById('btnSinglePlayer').classList.remove('hidden');
             document.getElementById('btnMultiplayer').classList.remove('hidden');
             document.getElementById('multiplayerMenu').classList.add('hidden');
         }

@@ -48,15 +48,11 @@ This is a multiplayer pixel destruction game featuring procedural terrain genera
 
 ## How to Play
 
-### Singleplayer
-1. Click "SINGLEPLAYER" on the main menu
-2. Game starts immediately with AI/physics simulation
-
-### Multiplayer
-1. Click "MULTIPLAYER" on the main menu
+### Multiplayer Only
+1. Click "PLAY" on the main menu
 2. WebSocket URL is automatically configured
 3. Click "CONNECT" to join the server
-4. Play with other connected players
+4. Play with other connected players (up to 64)
 
 ### Controls
 - **Mouse**: Aim and shoot spells
@@ -92,12 +88,14 @@ To ensure 100% deterministic shared terrain across all players:
 
 ## Recent Changes
 
-**2025-10-05**: Server-authoritative terrain system
+**2025-10-05**: Server-authoritative terrain system + Singleplayer removal
 - Converted from "Player 1 Authority" to full server authority for terrain generation
 - Server generates terrain on startup using Terrain class with deterministic RNG (~200ms)
 - All connecting players receive the server's canonical terrain snapshot (~1.92MB base64)
 - Removed client-side terrain upload logic (needsTerrainSnapshot flag)
 - **Clients skip local terrain generation** - directly load server terrain for faster connection
+- **Fixed Player 2 terrain overwrite bug** - fluids now spawn after snapshot loads, not before
+- **Removed singleplayer mode** - game is now multiplayer-only
 - Ensures fair gameplay - no player has terrain generation advantage
 - Added module.exports to deterministic.js and terrain.js for Node.js compatibility
 - Ensures 100% identical terrain across all multiplayer clients

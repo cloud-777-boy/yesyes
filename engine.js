@@ -150,8 +150,12 @@ class GameEngine {
             this.eigenSand.reset();
         }
 
-        const fluids = this.terrain.consumeInitialFluids();
-        this.spawnInitialFluids(fluids);
+        // Only spawn initial fluids if we generated terrain locally
+        // If skipping generation, fluids will be spawned after loading snapshot
+        if (!skipTerrainGeneration) {
+            const fluids = this.terrain.consumeInitialFluids();
+            this.spawnInitialFluids(fluids);
+        }
 
         // Setup camera
         this.cameraX = this.width / 2;
@@ -192,6 +196,11 @@ class GameEngine {
         this.pendingFluidCount = 0;
         this.liquidBlobCache.clear();
         this.nextLiquidBlobId = 1;
+        
+        // Spawn initial fluids from the loaded terrain
+        const fluids = this.terrain.consumeInitialFluids();
+        this.spawnInitialFluids(fluids);
+        
         const { width, height } = this.getViewDimensions();
         this.updateActiveChunks(width, height);
         this.spawnPendingFluids(true);
