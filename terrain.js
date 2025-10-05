@@ -307,6 +307,15 @@ class Terrain {
         const props = this.substances[material];
         return props ? !!props.raiseOnContact : false;
     }
+
+    isLiquid(x, y) {
+        const material = this.getPixel(x, y);
+        if (material === this.EMPTY || material === this.BEDROCK) {
+            return false;
+        }
+        const props = this.substances[material];
+        return props ? props.type === 'liquid' : false;
+    }
     
     destroy(centerX, centerY, radius) {
         const chunks = [];
