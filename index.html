@@ -407,6 +407,13 @@
 
             const storedOverride = normalizeServerUrl(getStoredServerOverride());
             if (storedOverride) {
+                // Auto-fix: Remove port from Replit domains (deployment compatibility)
+                const fixedUrl = storedOverride.replace(/^(wss?:\/\/[^/:]+\.(?:replit\.app|replit\.dev|repl\.co)):5000\/?$/, '$1');
+                if (fixedUrl !== storedOverride) {
+                    console.log('[URL Fix] Removed :5000 from Replit domain URL');
+                    storeServerOverride(fixedUrl);
+                    return fixedUrl;
+                }
                 return storedOverride;
             }
 
