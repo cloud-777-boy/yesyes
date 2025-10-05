@@ -303,8 +303,8 @@
         function getDefaultWebSocketUrl() {
             const { protocol, hostname, port, host, origin } = window.location;
             const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
-            const normalizedHost = host || hostname;
             const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.local');
+            const isReplitDomain = hostname.endsWith('.replit.app') || hostname.endsWith('.replit.dev') || hostname.endsWith('.repl.co');
 
             if (isLocalhost) {
                 // Use the same port as HTTP server (default 5000)
@@ -316,12 +316,18 @@
                 return 'ws://localhost:5000';
             }
 
+            // For Replit domains, never add port - use standard 80/443
+            if (isReplitDomain) {
+                return `${wsProtocol}//${hostname}`;
+            }
+
+            // For custom domains with non-standard ports
             if (port && port !== '80' && port !== '443') {
                 return `${wsProtocol}//${hostname}:${port}`;
             }
 
-            // Use the same host for WebSocket (both on same port now)
-            return `${wsProtocol}//${normalizedHost}`;
+            // Default: use hostname without port
+            return `${wsProtocol}//${hostname}`;
         }
 
         function getGlobalServerOverride() {
