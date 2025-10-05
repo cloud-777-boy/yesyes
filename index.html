@@ -567,9 +567,11 @@
                 createEngine: (welcome) => {
                     const seed = typeof welcome.seed === 'number' ? welcome.seed : (Date.now() >>> 0);
                     const engineInstance = new GameEngine(canvas, false, { seed });
-                    engineInstance.init();
+                    // Skip local terrain generation in multiplayer - server provides terrain
+                    const willLoadServerTerrain = welcome.terrainSnapshot && typeof engineInstance.loadTerrainSnapshot === 'function';
+                    engineInstance.init(willLoadServerTerrain);
                     engineInstance.onCanvasResized();
-                    if (welcome.terrainSnapshot && typeof engineInstance.loadTerrainSnapshot === 'function') {
+                    if (willLoadServerTerrain) {
                         engineInstance.loadTerrainSnapshot(welcome.terrainSnapshot);
                     }
                     return engineInstance;

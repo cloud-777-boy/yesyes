@@ -108,13 +108,15 @@ class GameEngine {
         this._boundLoop = this.loop.bind(this);
     }
     
-    init() {
+    init(skipTerrainGeneration = false) {
         // Initialize terrain
         const terrainRng = this.random && typeof this.random.fork === 'function'
             ? this.random.fork('terrain')
             : null;
         this.terrain = new Terrain(this.width, this.height, terrainRng);
-        this.terrain.generate();
+        if (!skipTerrainGeneration) {
+            this.terrain.generate();
+        }
         this.sandChunks.clear();
         this.sandParticleCount = 0;
         this.sandAdaptiveCursor = 0;
