@@ -14,6 +14,7 @@ class InputManager {
         this.mouseWorldX = 0;
         this.mouseWorldY = 0;
         this.mouseDown = false;
+        this.lastAimVector = { x: 1, y: 0 };
         this.touchControlsActive = false;
         this.touchMoveLeft = false;
         this.touchMoveRight = false;
@@ -199,10 +200,11 @@ class InputManager {
         let moveLeft = false;
         let moveRight = false;
         let aimActive = false;
-        let aimXRatio = 0.75;
-        let aimYRatio = 0.5;
+        let aimVector = null;
+        let aimMagnitudeSq = 0;
 
         const deadZone = 0.15;
+        const aimDeadZone = 0.12;
 
         for (const touch of touches) {
             let xRatio = (touch.clientX - rect.left) / rectWidth;
@@ -220,9 +222,14 @@ class InputManager {
                     currentJumpActive = true;
                 }
             } else {
-                aimActive = true;
-                aimXRatio = xRatio;
-                aimYRatio = yRatio;
+                const relativeX = Math.max(-1, Math.min(1, (xRatio - 0.75) / 0.25));
+                const relativeY = Math.max(-1, Math.min(1, (yRatio - 0.5) / 0.5));
+                const magnitudeSq = relativeX * relativeX + relativeY * relativeY;
+                if (!aimActive || magnitudeSq > aimMagnitudeSq) {
+                    aimActive = true;
+                    aimMagnitudeSq = magnitudeSq;
+                    aimVector = { x: relativeX, y: relativeY };
+                }
             }
         }
 
@@ -233,9 +240,18 @@ class InputManager {
         this.touchMoveLeft = moveLeft;
         this.touchMoveRight = moveRight;
 
-        if (aimActive) {
+        if (aimActive && aimVector) {
+            const magnitude = Math.sqrt(aimMagnitudeSq);
+            const normalizedMagnitude = Math.min(1, magnitude || 0);
+
+            if (magnitude > aimDeadZone) {
+                const normFactor = magnitude > 0 ? 1 / magnitude : 1;
+                this.lastAimVector.x = aimVector.x * normFactor;
+                this.lastAimVector.y = aimVector.y * normFactor;
+            }
+
             this.mouseDown = true;
-            this.updateAimFromRatio(aimXRatio, aimYRatio);
+            this.setAimDirection(this.lastAimVector.x, this.lastAimVector.y, normalizedMagnitude);
         } else {
             this.mouseDown = false;
         }
@@ -259,5 +275,54 @@ class InputManager {
 
         this.mouseWorldX = wrapHorizontal(canvasX / scale + camX, this.engine.width);
         this.mouseWorldY = canvasY / scale + camY;
+        this.updateLastAimVector();
+    }
+
+    setAimDirection(dirX, dirY, magnitude = 1) {
+        const player = this.engine.players.get(this.engine.playerId);
+        if (!player) return;
+
+        const norm = Math.hypot(dirX, dirY);
+        const unitX = norm > 0 ? dirX / norm : 1;
+        const unitY = norm > 0 ? dirY / norm : 0;
+
+        const clampedMagnitude = Math.max(0, Math.min(1, magnitude));
+        const minRadius = 12;
+        const maxRadius = 48;
+        const distance = minRadius + (maxRadius - minRadius) * clampedMagnitude;
+
+        const centerX = wrapHorizontal(player.x + player.width / 2, this.engine.width);
+        const centerY = player.y + player.height / 2;
+
+        this.applyAimWorld(centerX + unitX * distance, centerY + unitY * distance);
+    }
+
+    applyAimWorld(worldX, worldY) {
+        const wrappedX = wrapHorizontal(worldX, this.engine.width);
+        const scale = this.engine.pixelSize;
+        const dxToCamera = shortestWrappedDelta(wrappedX, this.engine.cameraX, this.engine.width);
+        const dyToCamera = worldY - this.engine.cameraY;
+
+        this.mouseWorldX = wrappedX;
+        this.mouseWorldY = worldY;
+        this.mouseX = this.canvas.width / 2 + dxToCamera * scale;
+        this.mouseY = this.canvas.height / 2 + dyToCamera * scale;
+
+        this.updateLastAimVector();
+    }
+
+    updateLastAimVector() {
+        const player = this.engine.players.get(this.engine.playerId);
+        if (!player) return;
+
+        const centerX = wrapHorizontal(player.x + player.width / 2, this.engine.width);
+        const centerY = player.y + player.height / 2;
+        const dx = shortestWrappedDelta(this.mouseWorldX, centerX, this.engine.width);
+        const dy = this.mouseWorldY - centerY;
+        const length = Math.hypot(dx, dy);
+        if (length > 0.0001) {
+            this.lastAimVector.x = dx / length;
+            this.lastAimVector.y = dy / length;
+        }
     }
 }
