@@ -19,6 +19,7 @@ class Player {
         this.jumpPower = -6;
         this.grounded = false;
         this.maxFallSpeed = 12;
+        this.maxStepHeight = 3;
         
         // Spell casting
         this.aimAngle = 0;
@@ -189,11 +190,35 @@ class Player {
 
         const steps = Math.max(1, Math.ceil(Math.abs(velocity)));
         const step = velocity / steps;
+        const canStepUp = (this.vy >= -0.5);
+        const maxStepHeight = Math.max(0, Math.ceil(this.maxStepHeight || 0));
         let collided = false;
 
         for (let i = 0; i < steps; i++) {
             this.x += step;
             if (this.isColliding(engine, this.x, this.y)) {
+                let steppedUp = false;
+                if (canStepUp && maxStepHeight > 0) {
+                    const originalY = this.y;
+                    for (let climb = 1; climb <= maxStepHeight; climb++) {
+                        const testY = originalY - climb;
+                        if (!this.isColliding(engine, this.x, testY)) {
+                            this.y = testY;
+                            this.vy = Math.min(this.vy, 0);
+                            steppedUp = true;
+                            break;
+                        }
+                    }
+
+                    if (!steppedUp) {
+                        this.y = originalY;
+                    }
+                }
+
+                if (steppedUp) {
+                    continue;
+                }
+
                 this.x -= step;
                 if (step > 0) {
                     this.x = Math.floor(this.x);

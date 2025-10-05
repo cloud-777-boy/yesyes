@@ -9,6 +9,7 @@
     <meta name="apple-mobile-web-app-title" content="Pixel Mage Arena">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="format-detection" content="telephone=no">
+    <meta name="pma-default-server" content="">
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="icon" type="image/png" sizes="48x48" href="icons/icon-48.png">
     <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png">
@@ -246,6 +247,8 @@
         let deferredInstallPrompt = null;
         const installButton = document.getElementById('btnInstallApp');
         const iosInstallHint = document.getElementById('iosInstallHint');
+        const serverUrlInput = document.getElementById('serverUrl');
+        const SERVER_STORAGE_KEY = 'pma.serverUrl';
         const DEFAULT_ASPECT_RATIO = 16 / 9;
         const IPHONE_LANDSCAPE_ASPECT_RATIO = 19.5 / 9;
         const CANVAS_VIEWPORT_PADDING = 0.95;
@@ -296,15 +299,124 @@
         }
 
         function getDefaultWebSocketUrl() {
-            const hostname = window.location.hostname;
-            const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
-            
+            const { protocol, hostname, port, host, origin } = window.location;
+            const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
+            const normalizedHost = host || hostname;
+            const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.local');
+
             if (isLocalhost) {
                 return 'ws://localhost:8080';
-            } else {
-                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                return `${protocol}//${hostname}:8080`;
             }
+
+            if (origin === 'null') {
+                return 'ws://localhost:8080';
+            }
+
+            if (port && port !== '80' && port !== '443') {
+                return `${wsProtocol}//${hostname}:${port}`;
+            }
+
+            let targetHost = normalizedHost;
+            if (hostname.endsWith('.replit.app')) {
+                targetHost = hostname.replace('.replit.app', '.repl.co');
+            } else if (hostname.endsWith('.replit.dev')) {
+                targetHost = hostname.replace('.replit.dev', '.repl.co');
+            }
+
+            return `${wsProtocol}//${targetHost}`;
+        }
+
+        function getGlobalServerOverride() {
+            if (typeof window !== 'undefined') {
+                const override = window.PIXEL_MAGE_SERVER || window.PIXEL_MAGE_SERVER_URL;
+                if (typeof override === 'string' && override.trim()) {
+                    return override.trim();
+                }
+            }
+            return '';
+        }
+
+        function getMetaServerOverride() {
+            const meta = document.querySelector('meta[name="pma-default-server"]');
+            if (meta && typeof meta.content === 'string' && meta.content.trim()) {
+                return meta.content.trim();
+            }
+            return '';
+        }
+
+        function getStoredServerOverride() {
+            try {
+                const stored = window.localStorage.getItem(SERVER_STORAGE_KEY);
+                return stored || '';
+            } catch (error) {
+                console.warn('Unable to access localStorage for server URL:', error);
+                return '';
+            }
+        }
+
+        function storeServerOverride(url) {
+            if (!url) return;
+            try {
+                window.localStorage.setItem(SERVER_STORAGE_KEY, url);
+            } catch (error) {
+                console.warn('Unable to store server URL preference:', error);
+            }
+        }
+
+        function getQueryServerOverride() {
+            try {
+                const params = new URLSearchParams(window.location.search || '');
+                const value = params.get('server');
+                return value ? value.trim() : '';
+            } catch (error) {
+                return '';
+            }
+        }
+
+        function normalizeServerUrl(url) {
+            if (!url) return '';
+            let trimmed = url.trim();
+            if (!trimmed) return '';
+
+            if (/^https?:\/\//i.test(trimmed)) {
+                trimmed = trimmed.replace(/^http:\/\/+/i, 'ws://').replace(/^https:\/\/+/i, 'wss://');
+            }
+
+            if (!/^wss?:\/\//i.test(trimmed)) {
+                const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                if (trimmed.startsWith('//')) {
+                    trimmed = `${wsProtocol}${trimmed}`;
+                } else {
+                    trimmed = `${wsProtocol}//${trimmed.replace(/^\/+/, '')}`;
+                }
+            }
+
+            return trimmed;
+        }
+
+        function resolveInitialServerUrl() {
+            const queryOverride = normalizeServerUrl(getQueryServerOverride());
+            if (queryOverride) {
+                storeServerOverride(queryOverride);
+                return queryOverride;
+            }
+
+            const storedOverride = normalizeServerUrl(getStoredServerOverride());
+            if (storedOverride) {
+                return storedOverride;
+            }
+
+            const globalOverride = normalizeServerUrl(getGlobalServerOverride());
+            if (globalOverride) {
+                return globalOverride;
+            }
+
+            const metaOverride = normalizeServerUrl(getMetaServerOverride());
+            if (metaOverride) {
+                return metaOverride;
+            }
+
+            return getDefaultWebSocketUrl();
         }
 
         function isStandaloneMode() {
@@ -329,7 +441,9 @@
         }
         
         window.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('serverUrl').value = getDefaultWebSocketUrl();
+            if (serverUrlInput) {
+                serverUrlInput.value = resolveInitialServerUrl();
+            }
             resizeCanvasToViewport();
             updateIOSInstallHint();
         });
@@ -381,6 +495,7 @@
             
             // Setup input
             input = new InputManager(canvas, game, null);
+            network = null;
             
             // Hide menu, show HUD
             document.getElementById('menu').classList.add('hidden');
@@ -408,7 +523,16 @@
         
         function startMultiplayer() {
             const canvas = document.getElementById('gameCanvas');
-            const serverUrl = document.getElementById('serverUrl').value;
+            const rawUrl = serverUrlInput ? serverUrlInput.value : '';
+            const serverUrl = normalizeServerUrl(rawUrl);
+            if (!serverUrl) {
+                alert('Please provide a multiplayer server URL before connecting.');
+                return;
+            }
+            if (serverUrlInput) {
+                serverUrlInput.value = serverUrl;
+            }
+            storeServerOverride(serverUrl);
             resizeCanvasToViewport();
             
             // Initialize game
@@ -446,15 +570,19 @@
                         console.log('Multiplayer game started!');
                     } else {
                         updateConnectionStatus(false, 'Connection failed');
-                        alert('Could not connect to server. Starting in offline mode instead.');
-                        startSinglePlayer();
+                        alert('Could not connect to multiplayer server. Check the server URL or try again later.');
+                        if (!game || !game.running) {
+                            startSinglePlayer();
+                        }
                     }
                 }, 1000);
             } catch (error) {
                 console.error('Connection error:', error);
                 updateConnectionStatus(false, 'Error: ' + error.message);
                 alert('Connection error. Starting in offline mode instead.');
-                startSinglePlayer();
+                if (!game || !game.running) {
+                    startSinglePlayer();
+                }
             }
         }
         
