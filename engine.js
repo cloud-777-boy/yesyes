@@ -26,6 +26,7 @@ class GameEngine {
         this.activeSandLists = [];
         this.activeSandChunkKeys = [];
         this.activeSandLookup = [];
+        this.activeSandChunkPriority = new Map();
         this.baseSandCapacity = 6000;
         this.maxSandParticles = this.baseSandCapacity;
         this.sandPoolLimit = 5000;
@@ -36,6 +37,9 @@ class GameEngine {
         this.playerList = [];
         this.projectiles = [];
         this.particles = [];
+        this.playerChunkComputeRadius = 1;
+        this.playerChunkBufferRadius = 2;
+        this.maxComputedSandPriority = 1;
         // Adaptive sand scheduling keeps multiplayer deterministic while throttling
         // interior blob updates. Intervals are tuned so edge particles update every
         // frame, shell layers follow shortly after, and dense cores are revisited
@@ -44,8 +48,14 @@ class GameEngine {
             solidIntervals: [1, 3, 8],
             liquidIntervals: [1, 2, 5],
             solidRestBoost: [1, 1, 1.5],
-            liquidRestBoost: [1, 1, 1.2]
+            liquidRestBoost: [1, 1, 1.2],
+            liquidBlobMin: 24,
+            liquidBlobBulkThreshold: 0.4,
+            liquidBlobInterval: 16,
+            liquidBlobPressure: 0.045
         };
+        this.liquidBlobCache = new Map();
+        this.nextLiquidBlobId = 1;
 
         // Physics settings (deterministic)
         this.gravity = 0.3;
@@ -93,10 +103,13 @@ class GameEngine {
         this.activeSandLists.length = 0;
         this.activeSandChunkKeys.length = 0;
         this.activeSandLookup.length = 0;
+        this.activeSandChunkPriority.clear();
         this.sandOccupancy.clear();
         this.pendingFluidChunks.clear();
         this.pendingFluidCount = 0;
         this.lastFluidSpawnTick = -1;
+        this.liquidBlobCache.clear();
+        this.nextLiquidBlobId = 1;
 
         const fluids = this.terrain.consumeInitialFluids();
         this.spawnInitialFluids(fluids);
@@ -213,6 +226,15 @@ class GameEngine {
         const chunkRadiusY = Math.ceil(radiusY / chunkSize);
 
         this.activeChunkSet.clear();
+        this.activeSandChunkPriority.clear();
+
+        const setChunkPriority = (key, priority) => {
+            const current = this.activeSandChunkPriority.get(key);
+            if (current === undefined || priority < current) {
+                this.activeSandChunkPriority.set(key, priority);
+            }
+            this.activeChunkSet.add(key);
+        };
 
         const players = this.playerList.length ? this.playerList : Array.from(this.players.values());
         for (let i = 0; i < players.length; i++) {
@@ -224,7 +246,16 @@ class GameEngine {
                     const wrappedChunkX = ((chunkX + dx) % totalChunksX + totalChunksX) % totalChunksX;
                     const clampedChunkY = Math.max(0, Math.min(totalChunksY - 1, chunkY + dy));
                     const key = `${wrappedChunkX}|${clampedChunkY}`;
-                    this.activeChunkSet.add(key);
+                    const dist = Math.max(Math.abs(dx), Math.abs(dy));
+                    let priority = 3;
+                    if (dist <= this.playerChunkComputeRadius) {
+                        priority = 0;
+                    } else if (dist <= this.playerChunkComputeRadius + this.playerChunkBufferRadius) {
+                        priority = 1;
+                    } else {
+                        priority = 2;
+                    }
+                    setChunkPriority(key, priority);
                 }
             }
         }
@@ -236,7 +267,7 @@ class GameEngine {
                 const wrappedChunkX = ((camChunkX + dx) % totalChunksX + totalChunksX) % totalChunksX;
                 const clampedChunkY = Math.max(0, Math.min(totalChunksY - 1, camChunkY + dy));
                 const key = `${wrappedChunkX}|${clampedChunkY}`;
-                this.activeChunkSet.add(key);
+                setChunkPriority(key, Math.min(this.activeSandChunkPriority.get(key) ?? 3, 3));
             }
         }
 
@@ -253,11 +284,13 @@ class GameEngine {
             const key = this.activeChunkKeys[i];
             const list = this.sandChunks.get(key);
             if (list && list.length) {
+                const priority = this.activeSandChunkPriority.get(key);
                 this.activeSandChunkKeys.push(key);
                 this.activeSandLists.push(list);
                 for (let j = 0; j < list.length; j++) {
                     const sand = list[j];
                     sand.chunkIndex = j;
+                    sand.chunkPriority = typeof priority === 'number' ? priority : 3;
                     this.activeSandLookup.push(sand);
                 }
             }
@@ -404,6 +437,10 @@ class GameEngine {
         const props = this.terrain.substances[material] || {};
         const mass = typeof props.density === 'number' ? props.density : 1;
         const isLiquid = props.type === 'liquid';
+        if (this.terrain.getPixel(x, y) !== this.terrain.EMPTY) {
+            this.terrain.setPixel(x, y, this.terrain.EMPTY);
+            this.terrain.markDirty(x, y);
+        }
         sand.init(x, y, material, color, 0, mass, isLiquid);
         const chunkX = Math.floor(x / this.chunkSize);
         let chunkY = Math.floor(y / this.chunkSize);
@@ -520,6 +557,7 @@ class GameEngine {
         const total = this.activeSandLookup.length;
         if (total === 0) {
             this.sandAdaptiveCursor = 0;
+            this.liquidBlobCache.clear();
             return;
         }
 
@@ -539,15 +577,143 @@ class GameEngine {
 
         const tick = this.tick;
         const dtStep = dt || this.fixedTimeStep || 16.666;
-        const candidates = [];
+
+        const chunkSize = this.chunkSize;
+        const totalChunksX = Math.ceil(this.width / chunkSize);
+        const totalChunksY = Math.ceil(this.height / chunkSize);
+
+        const chunkStats = new Map();
+        const previousBlobState = new Map();
+        const maxPriority = typeof this.maxComputedSandPriority === 'number'
+            ? Math.max(0, this.maxComputedSandPriority)
+            : 1;
+        const warmPriority = maxPriority + 1;
 
         for (let i = 0; i < total; i++) {
             const sand = this.activeSandLookup[i];
             if (sand.dead) continue;
+            const previousId = typeof sand.lastBlobId === 'number' ? sand.lastBlobId : -1;
+            previousBlobState.set(sand, previousId);
+            const priority = typeof sand.chunkPriority === 'number' ? sand.chunkPriority : 3;
+
+            if (priority > warmPriority) {
+                sand.blobId = -1;
+                sand.lastBlobId = -1;
+                continue;
+            }
+
+            const computeActive = priority <= maxPriority;
+            sand.blobId = -1;
+
+            if (!computeActive) {
+                sand.lastBlobId = -1;
+                sand.restTime = Math.min(sand.restTime + dtStep * 0.25, sand.settleDelay);
+                sand.nextUpdateTick = Math.max(sand.nextUpdateTick, tick + 20);
+                continue;
+            }
+
             sand.classifyActivity(this, occupancy, occupancyMap, tick);
+
+            if (sand.isLiquid) {
+                let chunkX = Math.floor(sand.x / chunkSize);
+                let chunkY = Math.floor(sand.y / chunkSize);
+                chunkY = Math.max(0, Math.min(totalChunksY - 1, chunkY));
+                chunkX = ((chunkX % totalChunksX) + totalChunksX) % totalChunksX;
+                const chunkKey = `${chunkX}|${chunkY}`;
+                let stats = chunkStats.get(chunkKey);
+                if (!stats) {
+                    stats = {
+                        chunkKey,
+                        chunkX,
+                        chunkY,
+                        members: [],
+                        total: 0,
+                        bulk: 0,
+                        sumY: 0,
+                        minY: sand.y,
+                        maxY: sand.y
+                    };
+                    chunkStats.set(chunkKey, stats);
+                }
+                stats.members.push(sand);
+                stats.total++;
+                stats.sumY += sand.y;
+                if (sand.y < stats.minY) stats.minY = sand.y;
+                if (sand.y > stats.maxY) stats.maxY = sand.y;
+                if (sand.activityLevel === SandActivityLevel.BULK) {
+                    stats.bulk++;
+                }
+            }
+        }
+
+        this.liquidBlobCache.clear();
+        const blobConfig = this.sandBlobConfig;
+        for (const [chunkKey, stats] of chunkStats) {
+            const minCount = blobConfig.liquidBlobMin || 48;
+            const minRatio = blobConfig.liquidBlobBulkThreshold || 0.6;
+            if (stats.total < minCount) {
+                continue;
+            }
+            if (stats.bulk / stats.total < minRatio) {
+                continue;
+            }
+            const blobId = this.nextLiquidBlobId++;
+            const avgY = stats.sumY / stats.total;
+            const depth = stats.maxY - stats.minY + 1;
+            const pressure = stats.total * (blobConfig.liquidBlobPressure || 0.04);
+            this.liquidBlobCache.set(chunkKey, {
+                id: blobId,
+                chunkKey,
+                chunkX: stats.chunkX,
+                chunkY: stats.chunkY,
+                avgY,
+                minY: stats.minY,
+                maxY: stats.maxY,
+                depth,
+                count: stats.total,
+                pressure
+            });
+            for (let i = 0; i < stats.members.length; i++) {
+                const sand = stats.members[i];
+                if (sand.activityLevel === SandActivityLevel.BULK) {
+                    sand.blobId = blobId;
+                }
+            }
+        }
+
+        const candidateBuckets = [];
+        for (let p = 0; p <= maxPriority; p++) {
+            candidateBuckets.push([]);
+        }
+
+        for (let i = 0; i < total; i++) {
+            const sand = this.activeSandLookup[i];
+            if (sand.dead) continue;
+            const prevBlobId = previousBlobState.get(sand) ?? -1;
+            const priority = typeof sand.chunkPriority === 'number' ? sand.chunkPriority : 3;
+            if (priority > maxPriority) {
+                sand.lastBlobId = -1;
+                continue;
+            }
             sand.resolveUpdateInterval(this);
+
+            if (sand.blobId !== -1 && sand.activityLevel === SandActivityLevel.BULK) {
+                const blobInterval = Math.max(sand.updateInterval, blobConfig.liquidBlobInterval || 12);
+                if (sand.nextUpdateTick <= tick) {
+                    sand.nextUpdateTick = tick + blobInterval;
+                }
+                sand.restTime = Math.min(sand.restTime + dtStep * 0.5, sand.settleDelay);
+                sand.lastBlobId = sand.blobId;
+                continue;
+            }
+
+            if (prevBlobId !== sand.blobId && prevBlobId !== -1 && sand.blobId === -1) {
+                sand.nextUpdateTick = Math.min(sand.nextUpdateTick, tick);
+            }
+
             if (sand.nextUpdateTick <= tick) {
-                candidates.push(sand);
+                const bucketIndex = Math.max(0, Math.min(priority, candidateBuckets.length - 1));
+                candidateBuckets[bucketIndex].push(sand);
             } else {
                 const terrain = this.terrain;
                 const substances = terrain ? terrain.substances : null;
@@ -558,6 +724,16 @@ class GameEngine {
                 const restIndex = Math.min(restTable.length - 1, sand.activityLevel);
                 const boost = restTable[restIndex] || 1;
                 sand.restTime = Math.min(sand.restTime + dtStep * boost, sand.settleDelay);
+            }
+
+            sand.lastBlobId = sand.blobId;
+        }
+
+        const candidates = [];
+        for (let p = 0; p < candidateBuckets.length; p++) {
+            const bucket = candidateBuckets[p];
+            for (let i = 0; i < bucket.length; i++) {
+                candidates.push(bucket[i]);
             }
         }
 
@@ -576,10 +752,6 @@ class GameEngine {
 
         this.sandAdaptiveCursor %= candidateCount;
         let processed = 0;
-
-        const chunkSize = this.chunkSize;
-        const totalChunksX = Math.ceil(this.width / chunkSize);
-        const totalChunksY = Math.ceil(this.height / chunkSize);
 
         while (processed < updates) {
             const idx = (this.sandAdaptiveCursor + processed) % candidateCount;
@@ -750,6 +922,23 @@ class GameEngine {
         ctx.fillText(`Sand: ${this.sandParticleCount}`, 10, 40);
         ctx.fillText(`Projectiles: ${this.projectiles.length}`, 10, 60);
         ctx.fillText(`Tick: ${this.tick}`, 10, 80);
+    }
+
+    getChunkKeyForPosition(x, y) {
+        const chunkSize = this.chunkSize;
+        const totalChunksX = Math.ceil(this.width / chunkSize);
+        const totalChunksY = Math.ceil(this.height / chunkSize);
+        const chunkX = ((Math.floor(x / chunkSize) % totalChunksX) + totalChunksX) % totalChunksX;
+        const chunkY = Math.max(0, Math.min(totalChunksY - 1, Math.floor(y / chunkSize)));
+        return `${chunkX}|${chunkY}`;
+    }
+
+    getLiquidBlobAt(x, y) {
+        if (!this.liquidBlobCache || this.liquidBlobCache.size === 0) {
+            return null;
+        }
+        const key = this.getChunkKeyForPosition(x, y);
+        return this.liquidBlobCache.get(key) || null;
     }
     
     spawnProjectile(x, y, vx, vy, type, ownerId) {

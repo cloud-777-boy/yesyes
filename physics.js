@@ -44,6 +44,9 @@ class SandParticle {
         this.lastClassifiedTick = -1;
         this.mass = typeof mass === 'number' && mass > 0 ? mass : 1;
         this.isLiquid = !!isLiquid;
+        this.blobId = -1;
+        this.lastBlobId = -1;
+        this.chunkPriority = 3;
     }
 
     reset() {
@@ -65,6 +68,9 @@ class SandParticle {
         this.lastClassifiedTick = -1;
         this.mass = 1;
         this.isLiquid = false;
+        this.blobId = -1;
+        this.lastBlobId = -1;
+        this.chunkPriority = 3;
     }
 
     key() {
@@ -275,10 +281,6 @@ class SandParticle {
             }
         }
 
-        if (props.type === 'liquid' && this.activityLevel > SandActivityLevel.SHELL) {
-            this.activityLevel = SandActivityLevel.SHELL;
-        }
-
         this.lastClassifiedTick = tick;
         return this.activityLevel;
     }
@@ -292,6 +294,11 @@ class SandParticle {
 
         const props = terrain.substances[this.material] || {};
         const config = engine.sandBlobConfig || {};
+        if (this.isLiquid && this.blobId !== -1) {
+            const blobInterval = Math.max(1, Math.floor(config.liquidBlobInterval || 12));
+            this.updateInterval = blobInterval;
+            return this.updateInterval;
+        }
         const solidIntervals = config.solidIntervals || [1, 3, 7];
         const liquidIntervals = config.liquidIntervals || [1, 2, 5];
         const table = props.type === 'liquid' ? liquidIntervals : solidIntervals;
@@ -345,6 +352,15 @@ class SandParticle {
         }
 
         if (isLiquid) {
+            const blobInfo = typeof engine.getLiquidBlobAt === 'function'
+                ? engine.getLiquidBlobAt(this.x, this.y)
+                : null;
+            if (blobInfo && this.activityLevel === SandActivityLevel.SHELL) {
+                const deltaToAvg = blobInfo.avgY - this.y;
+                if (Math.abs(deltaToAvg) > 0.75) {
+                    moveOrder.unshift({ dx: 0, dy: deltaToAvg > 0 ? 1 : -1 });
+                }
+            }
             const lateral = randomBias
                 ? [{ dx: -1, dy: 0 }, { dx: 1, dy: 0 }]
                 : [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }];
@@ -365,7 +381,7 @@ class SandParticle {
             if (this.drift !== 0) {
                 if (this.tryMove(engine, occupancy, occupancyMap, this.drift, 0)) {
                     this.restTime += timeStep * 0.5;
-                } else if (this.canOccupy(engine, occupancy, this.x + this.drift, this.y)) {
+                } else if (this.canOccupy(engine, occupancy, this.x + this.drift, this.y, occupancyMap, true)) {
                     const targetX = this.x + this.drift;
                     const wrappedX = wrapValue(targetX, engine.width) | 0;
                     this.x = wrappedX;
@@ -377,7 +393,7 @@ class SandParticle {
                 if (this.tryMix(engine, props)) {
                     return;
                 }
-                if (this.tryLiquidSpread(engine, occupancy, randomBias, timeStep)) {
+                if (this.tryLiquidSpread(engine, occupancy, occupancyMap, randomBias, timeStep)) {
                     moved = true;
                 }
             }
@@ -408,11 +424,11 @@ class SandParticle {
         }
     }
 
-    tryLiquidSpread(engine, occupancy, randomBias, timeStep) {
+    tryLiquidSpread(engine, occupancy, occupancyMap, randomBias, timeStep) {
         const lateralOrder = randomBias ? [-1, 1] : [1, -1];
         for (let i = 0; i < lateralOrder.length; i++) {
             const dx = lateralOrder[i];
-            if (this.canOccupy(engine, occupancy, this.x + dx, this.y)) {
+            if (this.canOccupy(engine, occupancy, this.x + dx, this.y, occupancyMap, true)) {
                 const wrappedX = wrapValue(this.x + dx, engine.width) | 0;
                 this.x = wrappedX;
                 this.restTime = Math.max(0, this.restTime - timeStep * 0.5);

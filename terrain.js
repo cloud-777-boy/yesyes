@@ -422,7 +422,80 @@ class Terrain {
             }
         }
 
+        this.healVerticalSeams(centerX, centerY, radius + 6);
+
         return chunks;
+    }
+
+    healVerticalSeams(centerX, centerY, radius) {
+        const width = this.width;
+        const height = this.height;
+        if (width <= 0 || height <= 0) return;
+
+        const minX = Math.floor(centerX - radius - 2);
+        const maxX = Math.ceil(centerX + radius + 2);
+        const minY = Math.max(0, Math.floor(centerY - radius - 16));
+        const maxY = Math.min(height - 1, Math.ceil(centerY + radius + 16));
+
+        const chooseFiller = (leftMat, rightMat) => {
+            const isSolid = (mat) => {
+                if (mat === this.EMPTY || mat === this.BEDROCK || mat == null) return false;
+                const props = this.substances[mat];
+                return props && props.type === 'solid';
+            };
+
+            const leftSolid = isSolid(leftMat) ? leftMat : null;
+            const rightSolid = isSolid(rightMat) ? rightMat : null;
+            if (!leftSolid && !rightSolid) return null;
+            if (leftSolid && rightSolid) {
+                if (leftSolid === rightSolid) return leftSolid;
+                const leftDensity = (this.substances[leftSolid] && this.substances[leftSolid].density) || 0;
+                const rightDensity = (this.substances[rightSolid] && this.substances[rightSolid].density) || 0;
+                return leftDensity >= rightDensity ? leftSolid : rightSolid;
+            }
+            return leftSolid || rightSolid;
+        };
+
+        for (let unwrappedX = minX; unwrappedX <= maxX; unwrappedX++) {
+            const wrappedX = Math.floor(wrapHorizontal(unwrappedX, width));
+            let y = minY;
+            while (y <= maxY) {
+                while (y <= maxY && this.getPixel(wrappedX, y) !== this.EMPTY) {
+                    y++;
+                }
+                if (y > maxY) break;
+
+                const startY = y;
+                while (y <= maxY && this.getPixel(wrappedX, y) === this.EMPTY) {
+                    y++;
+                }
+                const endY = y - 1;
+                const spanHeight = endY - startY + 1;
+                if (spanHeight <= 0) continue;
+
+                // Skip very large gaps (likely intended caves or open sky)
+                if (spanHeight > Math.max(radius * 2, 120)) {
+                    continue;
+                }
+
+                const leftX = (wrappedX - 1 + width) % width;
+                const rightX = (wrappedX + 1) % width;
+                const leftMat = this.getPixel(leftX, startY);
+                const rightMat = this.getPixel(rightX, startY);
+                const filler = chooseFiller(leftMat, rightMat);
+                if (!filler) {
+                    continue;
+                }
+
+                // Avoid filling through liquids
+                const fillerProps = this.substances[filler] || {};
+                if (fillerProps.type !== 'solid') continue;
+
+                for (let fillY = startY; fillY <= endY; fillY++) {
+                    this.setPixel(unwrappedX, fillY, filler);
+                }
+            }
+        }
     }
 
     floodFill(startX, startY, visited, maxSize = 400, startUnwrappedX = startX) {
