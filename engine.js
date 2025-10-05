@@ -120,6 +120,15 @@ class GameEngine {
             this.terrain.generate();
         } else {
             console.log('[Engine] Skipping local terrain generation (will load from server)');
+            // Initialize terrain state even when skipping generation
+            this.terrain.dirty = true;
+            this.terrain.fullRedrawNeeded = true;
+            this.terrain.dirtyBounds = {
+                minX: 0,
+                minY: 0,
+                maxX: this.terrain.width - 1,
+                maxY: this.terrain.height - 1
+            };
         }
         this.sandChunks.clear();
         this.sandParticleCount = 0;

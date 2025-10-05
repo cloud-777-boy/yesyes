@@ -94,13 +94,14 @@ To ensure 100% deterministic shared terrain across all players:
 
 **2025-10-05**: Server-authoritative terrain system
 - Converted from "Player 1 Authority" to full server authority for terrain generation
-- Server generates terrain on startup using Terrain class with deterministic RNG
-- All connecting players receive the server's canonical terrain snapshot
+- Server generates terrain on startup using Terrain class with deterministic RNG (~200ms)
+- All connecting players receive the server's canonical terrain snapshot (~1.92MB base64)
 - Removed client-side terrain upload logic (needsTerrainSnapshot flag)
+- **Clients skip local terrain generation** - directly load server terrain for faster connection
 - Ensures fair gameplay - no player has terrain generation advantage
 - Added module.exports to deterministic.js and terrain.js for Node.js compatibility
-- Server terrain generated in ~200ms on startup
 - Ensures 100% identical terrain across all multiplayer clients
+- Added detailed logging for debugging terrain synchronization
 
 **2025-10-05**: Fixed WebSocket URL and deployment issues
 - Combined HTTP and WebSocket on single port (5000)
