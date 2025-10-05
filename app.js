@@ -4,7 +4,6 @@ const path = require('path');
 const WebSocket = require('ws');
 
 const PORT = process.env.PORT || 5000;
-const WS_PORT = 8080;
 
 const mimeTypes = {
     '.html': 'text/html',
@@ -54,9 +53,8 @@ const httpServer = http.createServer((req, res) => {
 });
 
 class GameServer {
-    constructor(port = WS_PORT) {
-        this.port = port;
-        this.wss = new WebSocket.Server({ port: this.port });
+    constructor(httpServer) {
+        this.wss = new WebSocket.Server({ server: httpServer });
         
         this.players = new Map();
         this.tick = 0;
@@ -151,7 +149,7 @@ class GameServer {
             });
         });
         
-        console.log(`🎮 WebSocket server listening on port ${this.port}`);
+        console.log(`🎮 WebSocket server attached to HTTP server`);
         console.log(`📊 Tick rate: ${this.tickRate}Hz, State updates: ${this.stateUpdateRate}Hz`);
     }
     
@@ -340,10 +338,10 @@ class GameServer {
 }
 
 httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`🌐 HTTP server running on http://0.0.0.0:${PORT}`);
+    console.log(`🌐 HTTP + WebSocket server running on port ${PORT}`);
 });
 
-const gameServer = new GameServer(WS_PORT);
+const gameServer = new GameServer(httpServer);
 
 process.on('SIGINT', () => {
     console.log('\n🛑 Shutting down servers...');

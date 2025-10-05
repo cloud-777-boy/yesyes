@@ -18,8 +18,8 @@ This is a multiplayer pixel destruction game featuring procedural terrain genera
 
 ### Backend (Node.js)
 - **app.js**: Combined HTTP and WebSocket server
-  - HTTP server on port 5000 serves static files
-  - WebSocket server on port 8080 handles multiplayer game state
+  - Single server on port 5000 handles both HTTP and WebSocket connections
+  - WebSocket server attached to HTTP server for deployment compatibility
   - Includes cache-control headers to prevent stale content
 
 ### Game Features
@@ -35,10 +35,11 @@ This is a multiplayer pixel destruction game featuring procedural terrain genera
 ## Technical Setup
 
 ### Server Configuration
-- Frontend served on port 5000 (HTTP)
-- WebSocket multiplayer on port 8080
+- Single port (5000) for both HTTP and WebSocket
+- WebSocket connections upgrade from HTTP on the same port
 - Static file serving with no-cache headers
 - Automatic WebSocket URL detection based on environment
+- Deployment-ready: works in both local development and production
 
 ### Deployment
 - Configured as VM deployment (always-on server needed for WebSocket)
@@ -79,6 +80,12 @@ This is a multiplayer pixel destruction game featuring procedural terrain genera
 - Tick-based synchronization (60 Hz physics, 20 Hz state updates)
 
 ## Recent Changes
+
+**2025-10-05**: Fixed multiplayer deployment issue
+- Combined HTTP and WebSocket on single port (5000)
+- WebSocket server now attached to HTTP server instead of separate port
+- Fixes deployment issue where port 8080 was blocked by firewall
+- Updated client WebSocket URL detection to use same port as HTTP
 
 **2025-10-05**: Liquid physics improvements
 - Liquids (water/lava) now remain dynamic forever using falling sand physics

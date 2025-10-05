@@ -307,11 +307,13 @@
             const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.local');
 
             if (isLocalhost) {
-                return 'ws://localhost:8080';
+                // Use the same port as HTTP server (default 5000)
+                const wsPort = port || '5000';
+                return `${wsProtocol}//${hostname}:${wsPort}`;
             }
 
             if (origin === 'null') {
-                return 'ws://localhost:8080';
+                return 'ws://localhost:5000';
             }
 
             if (port && port !== '80' && port !== '443') {
