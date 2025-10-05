@@ -32,7 +32,9 @@ const httpServer = http.createServer((req, res) => {
     res.setHeader('Expires', '0');
     res.setHeader('Surrogate-Control', 'no-store');
 
-    let filePath = '.' + req.url;
+    // Strip query string for file serving (e.g., ?v=timestamp)
+    const urlPath = req.url.split('?')[0];
+    let filePath = '.' + urlPath;
     if (filePath === './') {
         filePath = './index.html';
     }
