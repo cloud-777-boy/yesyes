@@ -23,7 +23,7 @@ const WORLD_WIDTH = 11200;
 const WORLD_HEIGHT = 900;
 
 class GameServer {
-    constructor(port = 8080) {
+    constructor(port = 5000) {
         this.port = port;
         this.wss = new WebSocket.Server({ port: this.port });
 

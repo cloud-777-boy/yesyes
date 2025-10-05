@@ -26,9 +26,11 @@ const mimeTypes = {
 };
 
 const httpServer = http.createServer((req, res) => {
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    // Aggressive cache busting for Replit deployment
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
 
     let filePath = '.' + req.url;
     if (filePath === './') {
