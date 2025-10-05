@@ -320,14 +320,8 @@
                 return `${wsProtocol}//${hostname}:${port}`;
             }
 
-            let targetHost = normalizedHost;
-            if (hostname.endsWith('.replit.app')) {
-                targetHost = hostname.replace('.replit.app', '.repl.co');
-            } else if (hostname.endsWith('.replit.dev')) {
-                targetHost = hostname.replace('.replit.dev', '.repl.co');
-            }
-
-            return `${wsProtocol}//${targetHost}`;
+            // Use the same host for WebSocket (both on same port now)
+            return `${wsProtocol}//${normalizedHost}`;
         }
 
         function getGlobalServerOverride() {
