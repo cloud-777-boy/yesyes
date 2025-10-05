@@ -20,6 +20,7 @@ class Player {
         this.grounded = false;
         this.maxFallSpeed = 12;
         this.maxStepHeight = 3;
+        this.lastFluidCoverage = 0;
         
         // Spell casting
         this.aimAngle = 0;
@@ -104,6 +105,12 @@ class Player {
         this.vy += engine.gravity;
         if (this.vy > this.maxFallSpeed) {
             this.vy = this.maxFallSpeed;
+        }
+
+        const fluidCoverage = this.getFluidCoverage(engine);
+        this.lastFluidCoverage = fluidCoverage;
+        if (fluidCoverage > 0) {
+            this.applyFluidForces(engine, fluidCoverage);
         }
         
         // Resolve movement against terrain per axis to avoid tunneling
@@ -316,6 +323,65 @@ class Player {
             }
         }
         return false;
+    }
+
+    getFluidCoverage(engine) {
+        if (!engine || !engine.terrain) return 0;
+
+        const terrain = engine.terrain;
+        const left = Math.floor(this.x);
+        const right = Math.floor(this.x + this.width - 1);
+        const top = Math.floor(this.y);
+        const bottom = Math.floor(this.y + this.height - 1);
+
+        if (bottom < top || right < left) return 0;
+
+        let fluidCount = 0;
+        let sampleCount = 0;
+
+        for (let y = top; y <= bottom; y++) {
+            for (let x = left; x <= right; x++) {
+                sampleCount++;
+                if (typeof terrain.isLiquid === 'function') {
+                    if (terrain.isLiquid(x, y)) {
+                        fluidCount++;
+                    }
+                } else {
+                    const material = terrain.getPixel(x, y);
+                    const props = terrain.substances[material];
+                    if (props && props.type === 'liquid') {
+                        fluidCount++;
+                    }
+                }
+            }
+        }
+
+        if (sampleCount === 0) return 0;
+        return fluidCount / sampleCount;
+    }
+
+    applyFluidForces(engine, coverage) {
+        const gravity = engine ? engine.gravity : 0.3;
+        const clampedCoverage = Math.max(0, Math.min(1, coverage));
+        const buoyancy = gravity * (1.25 + 1.5 * clampedCoverage);
+
+        this.vy -= buoyancy * clampedCoverage;
+
+        const reducedFallSpeed = Math.max(1.5, this.maxFallSpeed * (1 - 0.75 * clampedCoverage));
+        if (this.vy > reducedFallSpeed) {
+            this.vy = reducedFallSpeed;
+        }
+
+        const maxUpwardSpeed = Math.max(2.5, Math.abs(this.jumpPower) * (0.4 + 0.4 * clampedCoverage));
+        if (this.vy < -maxUpwardSpeed) {
+            this.vy = -maxUpwardSpeed;
+        }
+
+        const drag = Math.max(0.2, 1 - 0.55 * clampedCoverage);
+        this.vx *= drag;
+        if (Math.abs(this.vx) < 0.01) {
+            this.vx = 0;
+        }
     }
 
     riseOutOfGranular(engine) {
