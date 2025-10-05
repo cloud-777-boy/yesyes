@@ -228,7 +228,11 @@ class EigenSandManager {
     updateChunks(priorityMap) {
         if (!priorityMap) return;
         const processed = new Set();
-        const entries = Array.from(priorityMap.entries());
+        const entries = Array.from(priorityMap.entries()).sort((a, b) => {
+            const priorityDiff = a[1] - b[1];
+            if (priorityDiff !== 0) return priorityDiff;
+            return a[0].localeCompare(b[0]);
+        });
         for (let i = 0; i < entries.length; i++) {
             const [key, priority] = entries[i];
             const parts = key.split('|');

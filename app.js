@@ -2,6 +2,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
+require('./deterministic.js');
+const DeterministicRandom = globalThis.DeterministicRandom;
 
 const PORT = process.env.PORT || 5000;
 
@@ -59,7 +61,10 @@ class GameServer {
         this.players = new Map();
         this.tick = 0;
         this.terrainModifications = [];
-        
+        this.playerCounter = 0;
+        this.seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
+        this.random = DeterministicRandom ? new DeterministicRandom(this.seed) : null;
+
         this.tickRate = 60;
         this.stateUpdateRate = 20;
         
@@ -77,18 +82,21 @@ class GameServer {
             
             console.log(`[${new Date().toISOString()}] Player ${playerId} connected from ${clientIP}`);
             
+            const playerRng = this.random ? this.random.fork(`player:${playerId}`) : null;
+            const spawnX = playerRng ? playerRng.nextRange(400, 1200) : Math.random() * 1200 + 200;
+            const spawnY = 100;
             const player = {
                 id: playerId,
                 ws: ws,
-                x: Math.random() * 1200 + 200,
-                y: 100,
+                x: spawnX,
+                y: spawnY,
                 vx: 0,
                 vy: 0,
                 health: 100,
                 maxHealth: 100,
                 alive: true,
                 aimAngle: 0,
-                selectedSpell: this.getRandomSpellIndex(),
+                selectedSpell: this.getRandomSpellIndex(playerId),
                 lastInputSequence: 0,
                 joinTime: Date.now()
             };
@@ -101,7 +109,8 @@ class GameServer {
                 tick: this.tick,
                 spawnX: player.x,
                 spawnY: player.y,
-                selectedSpell: player.selectedSpell
+                selectedSpell: player.selectedSpell,
+                seed: this.seed
             });
             
             this.broadcast({
@@ -238,7 +247,8 @@ class GameServer {
             x: msg.x,
             y: msg.y,
             radius: msg.radius,
-            explosive: msg.explosive
+            explosive: msg.explosive,
+            tick: this.tick
         });
     }
     
@@ -274,6 +284,7 @@ class GameServer {
         const state = {
             type: 'state',
             tick: this.tick,
+            seed: this.seed,
             players: Array.from(this.players.values()).map(p => ({
                 id: p.id,
                 x: p.x,
@@ -315,10 +326,15 @@ class GameServer {
     }
     
     generatePlayerId() {
-        return 'player-' + Math.random().toString(36).substr(2, 9);
+        this.playerCounter += 1;
+        return `player-${this.playerCounter.toString(36)}`;
     }
 
-    getRandomSpellIndex() {
+    getRandomSpellIndex(id = '') {
+        if (this.random && typeof this.random.fork === 'function') {
+            const rng = this.random.fork(`spell:${id}`);
+            return rng.nextInt(4);
+        }
         return Math.floor(Math.random() * 4);
     }
     

@@ -4,53 +4,77 @@
  */
 
 class NetworkManager {
-    constructor(engine) {
+    constructor(engine = null, options = {}) {
         this.engine = engine;
+        this.options = options || {};
+        this.engineReady = !!engine;
+        this._invokedEngineReady = !!engine;
+
         this.socket = null;
         this.connected = false;
         this.playerId = null;
-        
+
         // Lockstep networking
         this.inputBuffer = new Map(); // tick -> inputs
         this.currentTick = 0;
         this.confirmedTick = 0;
-        
+
         // Input prediction
         this.pendingInputs = [];
         this.inputSequence = 0;
-        
+
         // Server reconciliation
         this.stateHistory = [];
         this.maxHistorySize = 60; // 1 second at 60fps
-        
-        // Connection
+
+        // Connection diagnostics
         this.latency = 0;
         this.serverUrl = null;
+        this.appliedTerrainMods = new Map();
     }
-    
+
+    attachEngine(engine) {
+        this.engine = engine;
+        this.engineReady = !!engine;
+        if (!engine) {
+            this._invokedEngineReady = false;
+        } else {
+            engine.network = this;
+        }
+    }
+
     connect(url) {
         this.serverUrl = url;
         console.log(`[NetworkManager] Attempting to connect to: ${url}`);
-        
+
         try {
             this.socket = new WebSocket(url);
-            
+
             this.socket.onopen = () => {
                 console.log('[NetworkManager] ✅ Connected to server successfully');
                 this.connected = true;
+                if (typeof this.options.onConnected === 'function') {
+                    this.options.onConnected();
+                }
                 this.send({ type: 'join' });
             };
-            
+
             this.socket.onclose = (event) => {
                 console.log(`[NetworkManager] Disconnected from server (code: ${event.code}, reason: ${event.reason || 'none'})`);
                 this.connected = false;
+                if (typeof this.options.onDisconnected === 'function') {
+                    this.options.onDisconnected(event);
+                }
             };
-            
+
             this.socket.onerror = (error) => {
                 console.error('[NetworkManager] ❌ WebSocket error:', error);
                 console.error('[NetworkManager] URL attempted:', this.serverUrl);
+                if (typeof this.options.onError === 'function') {
+                    this.options.onError(error);
+                }
             };
-            
+
             this.socket.onmessage = (event) => {
                 this.handleMessage(JSON.parse(event.data));
             };
@@ -59,7 +83,7 @@ class NetworkManager {
             throw error;
         }
     }
-    
+
     disconnect() {
         if (this.socket) {
             this.socket.close();
@@ -67,188 +91,226 @@ class NetworkManager {
         }
         this.connected = false;
     }
-    
+
     send(data) {
         if (this.connected && this.socket.readyState === WebSocket.OPEN) {
             this.socket.send(JSON.stringify(data));
         }
     }
-    
+
     handleMessage(msg) {
         switch (msg.type) {
             case 'welcome':
-                this.playerId = msg.playerId;
-                this.engine.playerId = msg.playerId;
-                this.currentTick = msg.tick;
-                this.confirmedTick = msg.tick;
-                
-                // Add local player
-                this.engine.addPlayer(this.playerId, msg.spawnX, msg.spawnY, msg.selectedSpell);
+                this.handleWelcome(msg);
                 break;
-                
+
             case 'state':
                 this.handleStateUpdate(msg);
                 break;
-                
+
             case 'player_joined':
+                if (!this.engineReady) break;
                 if (msg.playerId !== this.playerId) {
                     this.engine.addPlayer(msg.playerId, msg.x, msg.y, msg.selectedSpell);
                 }
                 break;
-                
+
             case 'player_left':
-                this.engine.removePlayer(msg.playerId);
+                if (this.engineReady) {
+                    this.engine.removePlayer(msg.playerId);
+                }
                 break;
-                
+
             case 'input_ack':
                 this.handleInputAck(msg);
                 break;
-                
+
             case 'terrain_update':
                 this.handleTerrainUpdate(msg);
                 break;
-                
+
             case 'projectile':
-                // Spawn projectile from another player
+                if (!this.engineReady) break;
                 if (msg.ownerId !== this.playerId) {
                     this.engine.spawnProjectile(
                         msg.x, msg.y, msg.vx, msg.vy, msg.type, msg.ownerId
                     );
                 }
                 break;
+
+            case 'pong':
+                if (msg.timestamp) {
+                    this.latency = Math.max(0, Date.now() - msg.timestamp);
+                    if (typeof this.options.onLatency === 'function') {
+                        this.options.onLatency(this.latency);
+                    }
+                }
+                break;
         }
     }
-    
-    handleStateUpdate(msg) {
-        // Server authoritative state
-        this.confirmedTick = msg.tick;
-        
-        // Update all players except local (we use prediction for local)
-        for (const pData of msg.players) {
-            if (pData.id === this.playerId) continue;
-            
-            const player = this.engine.players.get(pData.id);
-            if (player) {
-                // Store server state for interpolation
-                if (!player.serverState) {
-                    player.serverState = { x: pData.x, y: pData.y };
-                }
-                player.lastServerState = { ...player.serverState };
-                player.serverState = { x: pData.x, y: pData.y, vx: pData.vx, vy: pData.vy };
-                player.serverStateTime = Date.now();
-                
-                // Update non-position data immediately
-                player.health = pData.health;
-                player.alive = pData.alive;
-                player.aimAngle = pData.aimAngle;
-                if (typeof player.normalizeSpellIndex === 'function') {
-                    player.selectedSpell = player.normalizeSpellIndex(pData.selectedSpell);
-                } else {
-                    player.selectedSpell = pData.selectedSpell;
-                }
+
+    ensureEngineFromWelcome(msg) {
+        if (this.engineReady) return this.engine;
+        if (typeof this.options.createEngine === 'function') {
+            const engineInstance = this.options.createEngine(msg);
+            if (engineInstance) {
+                this.attachEngine(engineInstance);
             }
         }
-        
-        // For local player, reconcile with server state
+        return this.engine;
+    }
+
+    handleWelcome(msg) {
+        this.ensureEngineFromWelcome(msg);
+        if (!this.engineReady) {
+            console.warn('[NetworkManager] No engine available to process welcome packet');
+            return;
+        }
+
+        this.playerId = msg.playerId;
+        this.engine.playerId = msg.playerId;
+        this.currentTick = msg.tick;
+        this.confirmedTick = msg.tick;
+        this.engine.tick = msg.tick;
+        if (typeof msg.seed === 'number') {
+            this.engine.setSeed(msg.seed);
+        }
+
+        if (!this.engine.players.has(this.playerId)) {
+            this.engine.addPlayer(this.playerId, msg.spawnX, msg.spawnY, msg.selectedSpell);
+        } else {
+            const player = this.engine.players.get(this.playerId);
+            player.x = msg.spawnX;
+            player.y = msg.spawnY;
+            if (typeof player.normalizeSpellIndex === 'function') {
+                player.selectedSpell = player.normalizeSpellIndex(msg.selectedSpell);
+            } else {
+                player.selectedSpell = msg.selectedSpell;
+            }
+        }
+
+        if (this.engineReady && !this._invokedEngineReady && typeof this.options.onEngineReady === 'function') {
+            this.options.onEngineReady(this.engine, msg);
+            this._invokedEngineReady = true;
+        }
+
+        if (typeof this.options.onWelcome === 'function') {
+            this.options.onWelcome(msg);
+        }
+    }
+
+    handleStateUpdate(msg) {
+        if (!this.engineReady) return;
+
+        if (typeof msg.seed === 'number') {
+            this.engine.setSeed(msg.seed);
+        }
+
+        this.confirmedTick = msg.tick;
+        this.engine.tick = msg.tick;
+
+        const playersData = Array.isArray(msg.players)
+            ? msg.players.slice().sort((a, b) => a.id.localeCompare(b.id))
+            : [];
+
+        for (const pData of playersData) {
+            if (pData.id === this.playerId) continue;
+            let player = this.engine.players.get(pData.id);
+            if (!player) {
+                player = this.engine.addPlayer(pData.id, pData.x, pData.y, pData.selectedSpell);
+            }
+            if (!player) continue;
+
+            if (!player.serverState) {
+                player.serverState = { x: pData.x, y: pData.y };
+            }
+            player.lastServerState = { ...player.serverState };
+            player.serverState = { x: pData.x, y: pData.y, vx: pData.vx, vy: pData.vy };
+            player.serverStateTime = Date.now();
+
+            player.health = pData.health;
+            player.alive = pData.alive;
+            player.aimAngle = pData.aimAngle;
+            if (typeof player.normalizeSpellIndex === 'function') {
+                player.selectedSpell = player.normalizeSpellIndex(pData.selectedSpell);
+            } else {
+                player.selectedSpell = pData.selectedSpell;
+            }
+        }
+
         if (this.playerId) {
-            const serverPlayer = msg.players.find(p => p.id === this.playerId);
+            const serverPlayer = playersData.find(p => p.id === this.playerId);
             if (serverPlayer) {
                 this.reconcileState(serverPlayer);
             }
         }
-        
-        // Update terrain modifications
-        if (msg.terrainMods) {
+
+        if (msg.terrainMods && this.engine) {
             for (const mod of msg.terrainMods) {
-                this.engine.destroyTerrain(mod.x, mod.y, mod.radius, mod.explosive);
+                const key = `${mod.x}:${mod.y}:${mod.radius}:${mod.explosive ? 1 : 0}`;
+                const newTick = typeof mod.tick === 'number' ? mod.tick : this.confirmedTick;
+                const previousTick = this.appliedTerrainMods.get(key);
+                if (previousTick !== undefined && newTick <= previousTick) continue;
+                this.appliedTerrainMods.set(key, newTick);
+                this.pruneTerrainHistory();
+                this.engine.destroyTerrain(mod.x, mod.y, mod.radius, mod.explosive, false);
             }
         }
     }
-    
-    reconcileState(serverState) {
-        const localPlayer = this.engine.players.get(this.playerId);
-        if (!localPlayer) return;
 
-        if (typeof localPlayer.normalizeSpellIndex === 'function') {
-            localPlayer.selectedSpell = localPlayer.normalizeSpellIndex(serverState.selectedSpell);
-        } else {
-            localPlayer.selectedSpell = serverState.selectedSpell;
-        }
-
-        // Check if local prediction diverged from server
-        const dx = localPlayer.x - serverState.x;
-        const dy = localPlayer.y - serverState.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        
-        if (distance > 30) {
-            // Large divergence, snap to server state
-            localPlayer.deserialize(serverState);
-            
-            // Re-apply pending inputs
-            for (const input of this.pendingInputs) {
-                if (input.sequence > serverState.lastProcessedInput) {
-                    this.applyInput(localPlayer, input);
-                }
-            }
-        } else if (distance > 2) {
-            // Small divergence, smoothly interpolate toward server state
-            const blend = 0.2; // 20% toward server state per update
-            localPlayer.x += dx * -blend;
-            localPlayer.y += dy * -blend;
-        }
-        
-        // Remove acknowledged inputs
-        this.pendingInputs = this.pendingInputs.filter(
-            i => i.sequence > serverState.lastProcessedInput
-        );
-    }
-    
     handleInputAck(msg) {
-        // Server confirmed processing this input
         this.pendingInputs = this.pendingInputs.filter(
             i => i.sequence > msg.sequence
         );
     }
-    
+
     handleTerrainUpdate(msg) {
-        // Apply terrain modification
-        this.engine.destroyTerrain(msg.x, msg.y, msg.radius, msg.explosive);
+        if (!this.engineReady) return;
+        const key = `${msg.x}:${msg.y}:${msg.radius}:${msg.explosive ? 1 : 0}`;
+        const newTick = typeof msg.tick === 'number' ? msg.tick : this.currentTick;
+        const previousTick = this.appliedTerrainMods.get(key);
+        if (previousTick !== undefined && newTick <= previousTick) {
+            return;
+        }
+        this.appliedTerrainMods.set(key, newTick);
+        this.pruneTerrainHistory();
+        this.engine.destroyTerrain(msg.x, msg.y, msg.radius, msg.explosive, false);
     }
-    
+
+    pruneTerrainHistory() {
+        while (this.appliedTerrainMods.size > 512) {
+            const first = this.appliedTerrainMods.keys().next();
+            if (first.done) break;
+            this.appliedTerrainMods.delete(first.value);
+        }
+    }
+
     sendInput(input) {
-        if (!this.connected || !this.playerId) return;
-        
+        if (!this.connected || !this.playerId || !this.engineReady) return;
+
         const localPlayer = this.engine.players.get(this.playerId);
-        
-        // Add sequence number and position data
+
         input.sequence = this.inputSequence++;
         input.tick = this.currentTick;
-        
-        // Include current position for server reconciliation
+
         if (localPlayer) {
             input.x = localPlayer.x;
             input.y = localPlayer.y;
             input.vx = localPlayer.vx;
             input.vy = localPlayer.vy;
         }
-        
-        // Store for reconciliation
-        this.pendingInputs.push({...input});
-        
-        // Send to server
-        this.send({
-            type: 'input',
-            input: input
-        });
-        
-        // Apply locally (client-side prediction)
+
+        this.pendingInputs.push({ ...input });
+
+        this.send({ type: 'input', input });
+
         if (localPlayer) {
             this.applyInput(localPlayer, input);
         }
     }
-    
+
     applyInput(player, input) {
-        // Apply input to player
+        if (!player) return;
         player.input = {
             left: input.left || false,
             right: input.right || false,
@@ -258,10 +320,9 @@ class NetworkManager {
             mouseY: input.mouseY || 0
         };
     }
-    
+
     sendProjectile(proj) {
         if (!this.connected) return;
-        
         this.send({
             type: 'projectile',
             x: proj.x,
@@ -272,72 +333,100 @@ class NetworkManager {
             ownerId: proj.ownerId
         });
     }
-    
+
     sendTerrainDestruction(x, y, radius, explosive) {
         if (!this.connected) return;
-        
+        if (this.engineReady) {
+            const key = `${x}:${y}:${radius}:${explosive ? 1 : 0}`;
+            this.appliedTerrainMods.set(key, Number.MAX_SAFE_INTEGER);
+            this.pruneTerrainHistory();
+        }
         this.send({
             type: 'terrain_destroy',
-            x: x,
-            y: y,
-            radius: radius,
-            explosive: explosive
+            x,
+            y,
+            radius,
+            explosive
         });
     }
-    
+
     update() {
         this.currentTick++;
-        
-        // Measure latency periodically
         if (this.currentTick % 60 === 0) {
             this.measureLatency();
         }
     }
-    
+
     measureLatency() {
         if (!this.connected) return;
-        
         const startTime = Date.now();
         this.send({
             type: 'ping',
             timestamp: startTime
         });
     }
-    
+
     getLatency() {
         return this.latency;
     }
-    
+
     interpolateRemotePlayers() {
+        if (!this.engineReady) return;
         const now = Date.now();
-        const interpolationSpeed = 0.3; // How quickly to blend toward server state
-        
+        const interpolationSpeed = 0.3;
+
         for (const [id, player] of this.engine.players.entries()) {
-            // Skip local player
             if (id === this.playerId) continue;
-            
-            // Interpolate toward server state if available
-            if (player.serverState && player.lastServerState) {
-                const timeSinceUpdate = now - (player.serverStateTime || now);
-                
-                // Interpolate position smoothly
-                if (timeSinceUpdate < 200) { // Only interpolate for recent updates
-                    const dx = player.serverState.x - player.x;
-                    const dy = player.serverState.y - player.y;
-                    
-                    player.x += dx * interpolationSpeed;
-                    player.y += dy * interpolationSpeed;
-                    
-                    // Also interpolate velocity for smoother prediction
-                    if (player.serverState.vx !== undefined) {
-                        player.vx = player.serverState.vx;
-                    }
-                    if (player.serverState.vy !== undefined) {
-                        player.vy = player.serverState.vy;
-                    }
-                }
+            if (!player.serverState || !player.lastServerState) continue;
+
+            const timeSinceUpdate = now - (player.serverStateTime || now);
+            if (timeSinceUpdate >= 200) continue;
+
+            const dx = player.serverState.x - player.x;
+            const dy = player.serverState.y - player.y;
+            player.x += dx * interpolationSpeed;
+            player.y += dy * interpolationSpeed;
+
+            if (player.serverState.vx !== undefined) {
+                player.vx = player.serverState.vx;
+            }
+            if (player.serverState.vy !== undefined) {
+                player.vy = player.serverState.vy;
             }
         }
+    }
+
+    reconcileState(serverState) {
+        if (!this.engineReady) return;
+        const localPlayer = this.engine.players.get(this.playerId);
+        if (!localPlayer) return;
+
+        if (typeof localPlayer.normalizeSpellIndex === 'function') {
+            localPlayer.selectedSpell = localPlayer.normalizeSpellIndex(serverState.selectedSpell);
+        } else {
+            localPlayer.selectedSpell = serverState.selectedSpell;
+        }
+
+        const dx = localPlayer.x - serverState.x;
+        const dy = localPlayer.y - serverState.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance > 30) {
+            localPlayer.deserialize(serverState);
+            for (const input of this.pendingInputs) {
+                if (input.sequence > serverState.lastProcessedInput) {
+                    this.applyInput(localPlayer, input);
+                }
+            }
+        } else if (distance > 2) {
+            const blend = 0.2;
+            localPlayer.x += dx * -blend;
+            localPlayer.y += dy * -blend;
+        }
+
+        this.pendingInputs = this.pendingInputs.filter(
+            i => i.sequence > serverState.lastProcessedInput
+        );
     }
 }
 
@@ -360,26 +449,17 @@ class MockServer {
             this.broadcast({
                 type: 'state',
                 tick: this.tick,
-                players: Array.from(this.players.values()),
-                terrainMods: []
+                players: Array.from(this.players.values())
             });
-        }, 1000 / 20); // 20 tick/s server update rate
+        }, 1000 / 20);
     }
     
-    handlePlayerJoin(playerId) {
-        this.players.set(playerId, {
-            id: playerId,
-            x: Math.random() * 800 + 100,
-            y: 100,
-            vx: 0,
-            vy: 0,
-            health: 100,
-            alive: true
-        });
+    broadcast(message) {
+        console.warn('MockServer.broadcast not implemented in this mock', message);
     }
-    
-    broadcast(msg) {
-        // In real server, send to all connected clients
-        console.log('Server broadcast:', msg.type);
-    }
+}
+
+if (typeof window !== 'undefined') {
+    window.NetworkManager = NetworkManager;
+    window.MockServer = MockServer;
 }

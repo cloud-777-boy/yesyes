@@ -54,6 +54,7 @@ class GameEngine {
         this.playerChunkComputeRadius = 1;
         this.playerChunkBufferRadius = 2;
         this.maxComputedSandPriority = 1;
+        this.network = null;
         // Adaptive sand scheduling keeps multiplayer deterministic while throttling
         // interior blob updates. Intervals are tuned so edge particles update every
         // frame, shell layers follow shortly after, and dense cores are revisited
@@ -70,7 +71,6 @@ class GameEngine {
         };
         this.liquidBlobCache = new Map();
         this.nextLiquidBlobId = 1;
-        this.activeSandChunkPriority = new Map();
         this.eigenSand = typeof EigenSandManager === 'function'
             ? new EigenSandManager(this)
             : null;
@@ -267,8 +267,9 @@ class GameEngine {
         };
 
         const players = this.playerList.length ? this.playerList : Array.from(this.players.values());
-        for (let i = 0; i < players.length; i++) {
-            const player = players[i];
+        const sortedPlayers = players.slice().sort((a, b) => a.id.localeCompare(b.id));
+        for (let i = 0; i < sortedPlayers.length; i++) {
+            const player = sortedPlayers[i];
             const chunkX = Math.floor(player.x / chunkSize);
             const chunkY = Math.floor(player.y / chunkSize);
             for (let dx = -chunkRadiusX; dx <= chunkRadiusX; dx++) {
@@ -301,10 +302,7 @@ class GameEngine {
             }
         }
 
-        this.activeChunkKeys.length = 0;
-        for (const key of this.activeChunkSet) {
-            this.activeChunkKeys.push(key);
-        }
+        this.activeChunkKeys = Array.from(this.activeChunkSet).sort((a, b) => a.localeCompare(b));
 
         this.activeSandLists.length = 0;
         this.activeSandChunkKeys.length = 0;
@@ -984,12 +982,16 @@ class GameEngine {
         return proj;
     }
 
-    destroyTerrain(x, y, radius, explosive = false) {
+    destroyTerrain(x, y, radius, explosive = false, broadcast = true) {
         const wrappedX = wrapHorizontal(x, this.width);
         const chunks = this.terrain.destroy(wrappedX, y, radius);
 
         for (const chunkData of chunks) {
             this.spawnSandFromPixels(chunkData, wrappedX, y, explosive);
+        }
+
+        if (broadcast && this.network && typeof this.network.sendTerrainDestruction === 'function') {
+            this.network.sendTerrainDestruction(wrappedX, y, radius, explosive);
         }
     }
 
@@ -1216,22 +1218,11 @@ class GameEngine {
 
         return state;
     }
-    
+
     setState(state) {
         this.tick = state.tick;
-        if (typeof state.seed === 'number' && state.seed !== this.seed) {
-            this.seed = state.seed >>> 0;
-            this.random = typeof DeterministicRandom === 'function'
-                ? new DeterministicRandom(this.seed)
-                : this.random;
-            if (this.terrain && this.random && typeof this.random.fork === 'function') {
-                this.terrain.random = this.random.fork('terrain');
-            }
-            for (const player of this.playerList) {
-                if (player && this.random && typeof this.random.fork === 'function') {
-                    player.random = this.random.fork(`player:${player.id}`);
-                }
-            }
+        if (typeof state.seed === 'number') {
+            this.setSeed(state.seed);
         }
         
         // Update players
@@ -1270,5 +1261,27 @@ class GameEngine {
 
         // Sync projectiles and sand if needed
         // (In a real implementation, you'd do delta compression here)
+    }
+
+    setSeed(seed) {
+        if (typeof seed !== 'number') return;
+        const normalized = seed >>> 0;
+        if (normalized === this.seed) return;
+        this.seed = normalized;
+        const fallbackRandom = this.random || null;
+        this.random = typeof DeterministicRandom === 'function'
+            ? new DeterministicRandom(this.seed)
+            : fallbackRandom;
+        if (this.terrain && this.random && typeof this.random.fork === 'function') {
+            this.terrain.random = this.random.fork('terrain');
+        }
+        for (const player of this.playerList) {
+            if (player && this.random && typeof this.random.fork === 'function') {
+                player.random = this.random.fork(`player:${player.id}`);
+            }
+        }
+        if (this.eigenSand) {
+            this.eigenSand.reset();
+        }
     }
 }

@@ -493,9 +493,14 @@
         function startSinglePlayer() {
             const canvas = document.getElementById('gameCanvas');
             resizeCanvasToViewport();
+
+            if (game && game.running) {
+                game.stop();
+            }
             
             // Initialize game
-            game = new GameEngine(canvas, false);
+            const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
+            game = new GameEngine(canvas, false, { seed });
             game.init();
             game.onCanvasResized();
             
@@ -515,7 +520,9 @@
             game.start();
             
             // Update HUD
-            setInterval(updateHUD, 100);
+            if (!window.__pmaHudInterval) {
+                window.__pmaHudInterval = setInterval(updateHUD, 100);
+            }
             
             console.log('Singleplayer game started!');
         }
@@ -545,51 +552,45 @@
             }
             storeServerOverride(serverUrl);
             resizeCanvasToViewport();
-            
-            // Initialize game
-            game = new GameEngine(canvas, false);
-            game.init();
-            game.onCanvasResized();
-            
-            // Setup networking
-            network = new NetworkManager(game);
-            
-            // Show connection status
+
+            if (game && game.running) {
+                game.stop();
+            }
+
             document.getElementById('connectionStatus').classList.remove('hidden');
             updateConnectionStatus(false, 'Connecting...');
-            
-            // Try to connect
+
+            const options = {
+                onConnected: () => updateConnectionStatus(false, 'Connected. Synchronizing world...'),
+                onDisconnected: () => updateConnectionStatus(false, 'Disconnected'),
+                onError: (error) => updateConnectionStatus(false, `Error: ${error?.message || 'unknown'}`),
+                createEngine: (welcome) => {
+                    const seed = typeof welcome.seed === 'number' ? welcome.seed : (Date.now() >>> 0);
+                    const engineInstance = new GameEngine(canvas, false, { seed });
+                    engineInstance.init();
+                    engineInstance.onCanvasResized();
+                    return engineInstance;
+                },
+                onEngineReady: (engineInstance) => {
+                    game = engineInstance;
+                    input = new InputManager(canvas, game, network);
+                    document.getElementById('menu').classList.add('hidden');
+                    if (!window.__pmaHudInterval) {
+                        window.__pmaHudInterval = setInterval(updateHUD, 100);
+                    }
+                    updateConnectionStatus(true, 'Connected');
+                    game.start();
+                    console.log('Multiplayer game started!');
+                }
+            };
+
+            network = new NetworkManager(null, options);
+
             try {
                 network.connect(serverUrl);
-                
-                // Wait for connection
-                setTimeout(() => {
-                    if (network.connected) {
-                        // Setup input with network
-                        input = new InputManager(canvas, game, network);
-                        
-                        // Hide menu, show HUD
-                        document.getElementById('menu').classList.add('hidden');
-                        
-                        // Start game loop
-                        game.start();
-                        
-                        // Update HUD
-                        setInterval(updateHUD, 100);
-                        
-                        updateConnectionStatus(true, 'Connected');
-                        console.log('Multiplayer game started!');
-                    } else {
-                        updateConnectionStatus(false, 'Connection failed');
-                        alert('Could not connect to multiplayer server. Check the server URL or try again later.');
-                        if (!game || !game.running) {
-                            startSinglePlayer();
-                        }
-                    }
-                }, 1000);
             } catch (error) {
                 console.error('Connection error:', error);
-                updateConnectionStatus(false, 'Error: ' + error.message);
+                updateConnectionStatus(false, 'Connection error');
                 alert('Connection error. Starting in offline mode instead.');
                 if (!game || !game.running) {
                     startSinglePlayer();
