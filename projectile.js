@@ -78,12 +78,20 @@ class Projectile {
             this.vy += this.gravity;
         }
         
-        // Move
-        this.x += this.vx;
-        this.y += this.vy;
-
+        const stepX = this.vx;
+        const stepY = this.vy;
         if (engine) {
-            this.x = wrapHorizontal(this.x, engine.width);
+            const hit = this.raycast(engine, this.x, this.y, stepX, stepY);
+            this.x = wrapHorizontal(hit.x, engine.width);
+            this.y = hit.y;
+
+            if (hit.collided) {
+                this.explode(engine);
+                return;
+            }
+        } else {
+            this.x += stepX;
+            this.y += stepY;
         }
         
         // Spawn trail particles
@@ -119,7 +127,27 @@ class Projectile {
             this.dead = true;
         }
     }
-    
+
+    raycast(engine, startX, startY, deltaX, deltaY) {
+        const steps = Math.ceil(Math.max(Math.abs(deltaX), Math.abs(deltaY)));
+        if (steps <= 0) {
+            return { x: startX, y: startY, collided: false };
+        }
+        const stepX = deltaX / steps;
+        const stepY = deltaY / steps;
+        let x = startX;
+        let y = startY;
+        for (let i = 1; i <= steps; i++) {
+            x += stepX;
+            y += stepY;
+            const wrappedX = wrapHorizontal(x, engine.width);
+            if (engine.terrain.isSolid(Math.floor(wrappedX), Math.floor(y))) {
+                return { x: wrappedX, y, collided: true };
+            }
+        }
+        return { x, y, collided: false };
+    }
+
     checkPlayerCollision(player, engine) {
         const px = player.x + player.width / 2;
         const py = player.y + player.height / 2;
@@ -177,8 +205,9 @@ class Projectile {
             case 'lightning':
                 // Lightning chain effect
                 for (let i = 0; i < 5; i++) {
-                    const angle = Math.random() * Math.PI * 2;
-                    const dist = Math.random() * 20;
+                    const rng = engine && engine.random ? engine.random : null;
+                    const angle = (rng ? rng.nextFloat() : Math.random()) * Math.PI * 2;
+                    const dist = (rng ? rng.nextFloat() : Math.random()) * 20;
                     const px = this.x + Math.cos(angle) * dist;
                     const py = this.y + Math.sin(angle) * dist;
                     engine.spawnParticles(wrapHorizontal(px, engine.width), py, 3, this.color);

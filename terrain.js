@@ -30,10 +30,11 @@ if (typeof globalThis !== 'undefined') {
  */
 
 class Terrain {
-    constructor(width, height) {
+    constructor(width, height, rng = null) {
         this.width = width;
         this.height = height;
-        
+        this.random = rng || (typeof DeterministicRandom === 'function' ? new DeterministicRandom(0x5f3759df) : null);
+
         // Pixel data - each pixel stores material type
         this.pixels = new Uint8Array(width * height);
         
@@ -108,6 +109,13 @@ class Terrain {
         this.generating = false;
     }
 
+    nextRandomFloat() {
+        if (this.random && typeof this.random.nextFloat === 'function') {
+            return this.random.nextFloat();
+        }
+        return Math.random();
+    }
+
     setChunkSize(size) {
         const newSize = Math.max(1, Math.floor(size));
         if (newSize === this.chunkSize) return;
@@ -119,7 +127,8 @@ class Terrain {
     
     generate() {
         // Generate terrain using Perlin-like noise
-        const noise = new SimplexNoise();
+        const randFunc = () => this.nextRandomFloat();
+        const noise = new SimplexNoise(randFunc);
         if (this.surfaceCache) {
             this.surfaceCache.fill(this.height);
         }
@@ -782,7 +791,7 @@ class Terrain {
     generateCaves() {
         const area = this.width * this.height;
         const targetCaves = Math.max(6, Math.floor(area / 90000));
-        const caveNoise = new SimplexNoise(Math.random());
+        const caveNoise = new SimplexNoise(() => this.nextRandomFloat());
         let randSeed = Math.max(1, Math.abs(Math.floor(Math.sin(this.width * 12.9898 + this.height * 78.233) * 100000)));
         const rand = () => {
             const value = Math.sin(randSeed++) * 43758.5453123;
@@ -810,32 +819,33 @@ class Terrain {
         }
     }
 
-    carveCave(cx, cy, subtype, noise, rand = Math.random) {
+    carveCave(cx, cy, subtype, noise, rand = null) {
+        const randFn = rand || (this.random ? () => this.random.nextFloat() : Math.random);
         const record = { subtype, nodes: [] };
-        const baseRadius = 6 + rand() * 6;
+        const baseRadius = 6 + randFn() * 6;
         const clampY = (y) => Math.max(2, Math.min(this.height - 6, y));
 
-        const seedTunnel = (startX, startY, radius, noiseRef, randRef, depth = 0) => {
-            const length = (120 + randRef() * 160) * (depth === 0 ? 1 : 0.6);
-            let angle = randRef() * Math.PI * 2;
+        const seedTunnel = (startX, startY, radius, noiseRef, depth = 0) => {
+            const length = (120 + randFn() * 160) * (depth === 0 ? 1 : 0.6);
+            let angle = randFn() * Math.PI * 2;
             let x = startX;
             let y = startY;
             let prevBranch = 0;
 
             for (let step = 0; step < length; step++) {
-                const radiusScale = radius * (0.7 + randRef() * 0.6);
+                const radiusScale = radius * (0.7 + randFn() * 0.6);
                 this.carveBlob(Math.floor(x), Math.floor(y), radiusScale, radiusScale * 0.6);
                 record.nodes.push({ x, y, radius: radiusScale });
 
-                if (depth < 2 && step - prevBranch > 30 && randRef() > 0.78) {
+                if (depth < 2 && step - prevBranch > 30 && randFn() > 0.78) {
                     prevBranch = step;
-                    const branchAngle = angle + (randRef() - 0.5) * 1.2;
-                    const branchRadius = radius * (0.5 + randRef() * 0.4);
+                    const branchAngle = angle + (randFn() - 0.5) * 1.2;
+                    const branchRadius = radius * (0.5 + randFn() * 0.4);
                     const branchLength = length * 0.45;
                     let branchX = x;
                     let branchY = y;
                     for (let b = 0; b < branchLength; b++) {
-                        const brScale = branchRadius * (0.6 + randRef() * 0.4);
+                        const brScale = branchRadius * (0.6 + randFn() * 0.4);
                         this.carveBlob(Math.floor(branchX), Math.floor(branchY), brScale, brScale * 0.6);
                         record.nodes.push({ x: branchX, y: branchY, radius: brScale });
                         branchX += Math.cos(branchAngle) * 2.5;
@@ -844,7 +854,7 @@ class Terrain {
                     }
                 }
 
-                angle += (randRef() - 0.5) * 0.4;
+                angle += (randFn() - 0.5) * 0.4;
                 x += Math.cos(angle) * 3;
                 y = clampY(y + Math.sin(angle) * 2 + noiseRef.noise2D(x * 0.02, y * 0.02) * 2);
                 if (x < 4 || x >= this.width - 4) break;
@@ -852,21 +862,21 @@ class Terrain {
         };
 
         if (subtype === 'tube') {
-            seedTunnel(cx, cy, baseRadius, noise, rand, 0);
+            seedTunnel(cx, cy, baseRadius, noise, 0);
             return record;
         }
 
-        const radius = baseRadius * (1.5 + rand());
-        const verticalRadius = radius * (0.7 + rand() * 0.5);
+        const radius = baseRadius * (1.5 + randFn());
+        const verticalRadius = radius * (0.7 + randFn() * 0.5);
         this.carveBlob(cx, cy, radius, verticalRadius);
         record.nodes.push({ x: cx, y: cy, radius, verticalRadius });
 
-        const branchCount = 2 + Math.floor(rand() * 3);
+        const branchCount = 2 + Math.floor(randFn() * 3);
         for (let b = 0; b < branchCount; b++) {
-            const angle = rand() * Math.PI * 2;
+            const angle = randFn() * Math.PI * 2;
             const startX = cx + Math.cos(angle) * radius * 0.6;
             const startY = clampY(cy + Math.sin(angle) * verticalRadius * 0.5);
-            seedTunnel(startX, startY, radius * (0.6 + rand() * 0.4), noise, rand, 1);
+            seedTunnel(startX, startY, radius * (0.6 + randFn() * 0.4), noise, 1);
         }
 
         if (subtype === 'basin' || subtype === 'lake' || subtype === 'lava_lake') {
@@ -909,7 +919,7 @@ class Terrain {
     generateCaves() {
         const area = this.width * this.height;
         const targetCaves = Math.max(6, Math.floor(area / 90000));
-        const caveNoise = new SimplexNoise(Math.random());
+        const caveNoise = new SimplexNoise(() => this.nextRandomFloat());
         let randSeed = Math.max(1, Math.abs(Math.floor(Math.sin(this.width * 12.9898 + this.height * 78.233) * 100000)));
         const rand = () => {
             const value = Math.sin(randSeed++) * 43758.5453123;
@@ -937,21 +947,22 @@ class Terrain {
         }
     }
 
-    carveCave(cx, cy, subtype, noise, rand = Math.random) {
+    carveCave(cx, cy, subtype, noise, rand = null) {
+        const randFn = rand || (this.random ? () => this.random.nextFloat() : Math.random);
         const record = { subtype, nodes: [] };
-        const baseRadius = 4 + rand() * 4;
+        const baseRadius = 4 + randFn() * 4;
         const clampY = (y) => Math.max(2, Math.min(this.height - 6, y));
 
         if (subtype === 'tube') {
-            const length = 60 + rand() * 140;
-            let angle = rand() * Math.PI * 2;
+            const length = 60 + randFn() * 140;
+            let angle = randFn() * Math.PI * 2;
             let x = cx;
             let y = cy;
             for (let step = 0; step < length; step++) {
-                const radius = baseRadius * (0.7 + rand() * 0.6);
+                const radius = baseRadius * (0.7 + randFn() * 0.6);
                 this.carveBlob(Math.floor(x), Math.floor(y), radius, radius * 0.6);
                 record.nodes.push({ x, y, radius });
-                angle += (rand() - 0.5) * 0.4;
+                angle += (randFn() - 0.5) * 0.4;
                 x += Math.cos(angle) * 3;
                 y = clampY(y + Math.sin(angle) * 2 + noise.noise2D(x * 0.02, y * 0.02) * 2);
                 if (x < 4 || x >= this.width - 4) break;
@@ -959,8 +970,8 @@ class Terrain {
             return record;
         }
 
-        const radius = baseRadius * (1.4 + rand());
-        const verticalRadius = radius * (0.6 + rand() * 0.6);
+        const radius = baseRadius * (1.4 + randFn());
+        const verticalRadius = radius * (0.6 + randFn() * 0.6);
         this.carveBlob(cx, cy, radius, verticalRadius);
         record.nodes.push({ x: cx, y: cy, radius, verticalRadius });
 
@@ -1102,22 +1113,31 @@ class Terrain {
  * Simple noise generator for procedural terrain
  */
 class SimplexNoise {
-    constructor(seed = Math.random()) {
-        this.seed = seed;
+    constructor(seedOrRandom = Math.random()) {
         this.perm = new Uint8Array(512);
-        
+
+        const randFn = typeof seedOrRandom === 'function'
+            ? seedOrRandom
+            : (() => {
+                const seedValue = (seedOrRandom * 0xffffffff) >>> 0;
+                const rng = typeof DeterministicRandom === 'function'
+                    ? new DeterministicRandom(seedValue)
+                    : null;
+                return rng
+                    ? () => rng.nextFloat()
+                    : () => Math.random();
+            })();
+
         const p = new Uint8Array(256);
         for (let i = 0; i < 256; i++) {
             p[i] = i;
         }
-        
-        // Shuffle
+
         for (let i = 255; i > 0; i--) {
-            const n = Math.floor((this.seed * 12345 + i) % (i + 1));
+            const n = Math.floor(randFn() * (i + 1)) % (i + 1);
             [p[i], p[n]] = [p[n], p[i]];
-            this.seed = (this.seed * 1103515245 + 12345) % 2147483647;
         }
-        
+
         for (let i = 0; i < 512; i++) {
             this.perm[i] = p[i & 255];
         }

@@ -4,11 +4,25 @@
  */
 
 class GameEngine {
-    constructor(canvas, isServer = false) {
+    constructor(canvas, isServer = false, options = {}) {
         this.canvas = canvas;
         this.ctx = canvas ? canvas.getContext('2d', { alpha: false }) : null;
         this.isServer = isServer;
-        
+        const seed = (options && typeof options.seed === 'number')
+            ? options.seed >>> 0
+            : 0x1f2e3d4c;
+        this.seed = seed;
+        const fallbackRandom = {
+            nextFloat: () => Math.random(),
+            nextInt: (max) => Math.floor(Math.random() * max),
+            nextBool: () => Math.random() < 0.5,
+            nextRange: (min, max) => min + Math.random() * (max - min),
+            fork: () => fallbackRandom
+        };
+        this.random = typeof DeterministicRandom === 'function'
+            ? new DeterministicRandom(this.seed)
+            : fallbackRandom;
+
         // Core systems
         this.width = 11200;
         this.height = 900;
@@ -56,6 +70,10 @@ class GameEngine {
         };
         this.liquidBlobCache = new Map();
         this.nextLiquidBlobId = 1;
+        this.activeSandChunkPriority = new Map();
+        this.eigenSand = typeof EigenSandManager === 'function'
+            ? new EigenSandManager(this)
+            : null;
 
         // Physics settings (deterministic)
         this.gravity = 0.3;
@@ -92,7 +110,10 @@ class GameEngine {
     
     init() {
         // Initialize terrain
-        this.terrain = new Terrain(this.width, this.height);
+        const terrainRng = this.random && typeof this.random.fork === 'function'
+            ? this.random.fork('terrain')
+            : null;
+        this.terrain = new Terrain(this.width, this.height, terrainRng);
         this.terrain.generate();
         this.sandChunks.clear();
         this.sandParticleCount = 0;
@@ -110,6 +131,9 @@ class GameEngine {
         this.lastFluidSpawnTick = -1;
         this.liquidBlobCache.clear();
         this.nextLiquidBlobId = 1;
+        if (this.eigenSand) {
+            this.eigenSand.reset();
+        }
 
         const fluids = this.terrain.consumeInitialFluids();
         this.spawnInitialFluids(fluids);
@@ -120,11 +144,17 @@ class GameEngine {
 
         const { width, height } = this.getViewDimensions();
         this.updateActiveChunks(width, height);
+        if (this.eigenSand) {
+            this.eigenSand.updateChunks(this.activeSandChunkPriority);
+        }
         this.spawnPendingFluids(true);
     }
     
     addPlayer(id, x, y, selectedSpell = null) {
-        const player = new Player(id, x, y, selectedSpell);
+        const playerRng = this.random && typeof this.random.fork === 'function'
+            ? this.random.fork(`player:${id}`)
+            : null;
+        const player = new Player(id, x, y, selectedSpell, playerRng);
         this.players.set(id, player);
         this.playerList.push(player);
         return player;
@@ -280,11 +310,15 @@ class GameEngine {
         this.activeSandChunkKeys.length = 0;
         this.activeSandLookup.length = 0;
 
+        const warmThreshold = this.playerChunkComputeRadius + this.playerChunkBufferRadius;
         for (let i = 0; i < this.activeChunkKeys.length; i++) {
             const key = this.activeChunkKeys[i];
             const list = this.sandChunks.get(key);
             if (list && list.length) {
                 const priority = this.activeSandChunkPriority.get(key);
+                if (priority !== undefined && priority > warmThreshold) {
+                    continue;
+                }
                 this.activeSandChunkKeys.push(key);
                 this.activeSandLists.push(list);
                 for (let j = 0; j < list.length; j++) {
@@ -301,6 +335,9 @@ class GameEngine {
         this.spawnPendingFluids(false);
         const { width: viewWidth, height: viewHeight } = this.getViewDimensions();
         this.updateActiveChunks(viewWidth, viewHeight);
+        if (this.eigenSand) {
+            this.eigenSand.updateChunks(this.activeSandChunkPriority);
+        }
 
         // Update players
         const players = this.playerList;
@@ -972,6 +1009,7 @@ class GameEngine {
         const availableSlots = this.maxSandParticles - this.sandParticleCount;
         const spawnCap = Math.min(this.maxSandSpawnPerDestroy, availableSlots);
         const spawnRatio = pixels.length > spawnCap ? spawnCap / pixels.length : 1;
+        const rng = this.random;
         let spawned = 0;
 
         if (spawnCap <= 0) {
@@ -980,7 +1018,8 @@ class GameEngine {
 
         for (let i = 0; i < pixels.length; i++) {
             if (spawned >= spawnCap) break;
-            if (Math.random() > spawnRatio) continue;
+            const roll = rng ? rng.nextFloat() : Math.random();
+            if (roll > spawnRatio) continue;
 
             const px = pixels[i];
             if (px.y < 0 || px.y >= this.height) continue;
@@ -993,8 +1032,11 @@ class GameEngine {
             if (explosive) {
                 const delta = shortestWrappedDelta(px.x, originX, this.width);
                 drift = delta === 0 ? 0 : Math.sign(delta);
-            } else if (Math.random() < 0.2) {
-                drift = Math.random() < 0.5 ? -1 : 1;
+            } else {
+                const driftRoll = rng ? rng.nextFloat() : Math.random();
+                if (driftRoll < 0.2) {
+                    drift = (rng ? rng.nextBool() : Math.random() < 0.5) ? -1 : 1;
+                }
             }
 
             const props = this.terrain.substances[px.material] || {};
@@ -1011,12 +1053,14 @@ class GameEngine {
     }
 
     spawnParticles(x, y, count, color) {
+        const rng = this.random;
         for (let i = 0; i < count; i++) {
             const particle = this.getParticleFromPool();
-            const angle = Math.random() * Math.PI * 2;
-            const speed = Math.random() * 3 + 1;
+            const angle = (rng ? rng.nextFloat() : Math.random()) * Math.PI * 2;
+            const speed = (rng ? rng.nextFloat() : Math.random()) * 3 + 1;
             const px = wrapHorizontal(x, this.width);
-            particle.init(px, y, Math.cos(angle) * speed, Math.sin(angle) * speed, color);
+            const decay = 0.02 + (rng ? rng.nextFloat() : Math.random()) * 0.02;
+            particle.init(px, y, Math.cos(angle) * speed, Math.sin(angle) * speed, color, decay, 0.15);
             this.particles.push(particle);
         }
     }
@@ -1155,6 +1199,7 @@ class GameEngine {
 
         const state = {
             tick: this.tick,
+            seed: this.seed,
             players: Array.from(this.players.values()).map(p => p.serialize()),
             projectiles: this.projectiles.map(p => p.serialize()),
             sand: this.sandParticleCount,
@@ -1174,6 +1219,20 @@ class GameEngine {
     
     setState(state) {
         this.tick = state.tick;
+        if (typeof state.seed === 'number' && state.seed !== this.seed) {
+            this.seed = state.seed >>> 0;
+            this.random = typeof DeterministicRandom === 'function'
+                ? new DeterministicRandom(this.seed)
+                : this.random;
+            if (this.terrain && this.random && typeof this.random.fork === 'function') {
+                this.terrain.random = this.random.fork('terrain');
+            }
+            for (const player of this.playerList) {
+                if (player && this.random && typeof this.random.fork === 'function') {
+                    player.random = this.random.fork(`player:${player.id}`);
+                }
+            }
+        }
         
         // Update players
         for (const pData of state.players) {
@@ -1199,6 +1258,10 @@ class GameEngine {
             this.loadSandChunks(state.sandChunks);
         } else if ((state.sandChunks && (!Array.isArray(state.sandChunks.chunks) || state.sandChunks.chunks.length === 0)) || (typeof state.sand === 'number' && state.sand === 0)) {
             this.clearSandChunks();
+        }
+
+        if (this.eigenSand) {
+            this.eigenSand.reset();
         }
 
         if (state.terrain) {

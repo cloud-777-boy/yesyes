@@ -328,7 +328,8 @@ class SandParticle {
 
         const preferLeft = this.drift < 0;
         const preferRight = this.drift > 0;
-        const randomBias = Math.random() < 0.5;
+        const rng = engine && engine.random ? engine.random : null;
+        const randomBias = rng ? rng.nextBool() : Math.random() < 0.5;
 
         const moveOrder = [];
         // Always try straight down first
@@ -508,15 +509,15 @@ class Particle {
         this.reset();
     }
     
-    init(x, y, vx, vy, color) {
+    init(x, y, vx, vy, color, decay = 0.03, gravity = 0.15) {
         this.x = x;
         this.y = y;
         this.vx = vx;
         this.vy = vy;
         this.color = color;
         this.life = 1.0;
-        this.decay = 0.02 + Math.random() * 0.02;
-        this.gravity = 0.15;
+        this.decay = decay;
+        this.gravity = gravity;
         this.dead = false;
     }
     

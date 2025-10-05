@@ -3,12 +3,14 @@
  */
 
 class Player {
-    constructor(id, x, y, selectedSpell = null) {
+    constructor(id, x, y, selectedSpell = null, random = null) {
         this.id = id;
         this.x = x;
         this.y = y;
         this.vx = 0;
         this.vy = 0;
+        const hash = id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) >>> 0;
+        this.random = random || (typeof DeterministicRandom === 'function' ? new DeterministicRandom(0x9e3779b9 ^ hash) : null);
         
         // Dimensions
         this.width = 6;
@@ -51,8 +53,23 @@ class Player {
         this.spells = ['fireball', 'ice', 'lightning', 'earth'];
         const initialSpellIndex = Number.isInteger(selectedSpell)
             ? selectedSpell
-            : Math.floor(Math.random() * this.spells.length);
+            : this.getRandomInt(this.spells.length);
         this.selectedSpell = this.normalizeSpellIndex(initialSpellIndex);
+    }
+
+    getRandomFloat() {
+        if (this.random && typeof this.random.nextFloat === 'function') {
+            return this.random.nextFloat();
+        }
+        return Math.random();
+    }
+
+    getRandomInt(maxExclusive) {
+        if (maxExclusive <= 0) return 0;
+        if (this.random && typeof this.random.nextInt === 'function') {
+            return this.random.nextInt(maxExclusive);
+        }
+        return Math.floor(Math.random() * maxExclusive);
     }
 
     normalizeSpellIndex(index) {
