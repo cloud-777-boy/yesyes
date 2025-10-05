@@ -2,7 +2,16 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#4ecdc4">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Pixel Mage Arena">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="format-detection" content="telephone=no">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" type="image/png" sizes="48x48" href="icons/icon-48.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png">
     <title>Pixel Mage Arena - Multiplayer Destruction Game</title>
     <style>
         * {
@@ -20,6 +29,7 @@
             justify-content: center;
             align-items: center;
             min-height: 100vh;
+            padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
         }
         
         #container {
@@ -108,9 +118,32 @@
         input::placeholder {
             color: rgba(255, 255, 255, 0.5);
         }
-        
+
         .hidden {
             display: none !important;
+        }
+
+        #iosInstallHint {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(10, 10, 26, 0.95);
+            padding: 12px 18px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            font-size: 0.85em;
+            color: rgba(255, 255, 255, 0.85);
+            text-align: center;
+            max-width: 320px;
+            line-height: 1.4;
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.35);
+        }
+
+        #iosInstallHint strong {
+            display: block;
+            color: #ffd93d;
+            margin-bottom: 6px;
         }
         
         #connectionStatus {
@@ -166,6 +199,12 @@
                     🌐 MULTIPLAYER
                 </button>
             </div>
+
+            <div class="menu-section">
+                <button id="btnInstallApp" class="hidden">
+                    📱 INSTALL APP
+                </button>
+            </div>
             
             <div id="multiplayerMenu" class="menu-section hidden">
                 <input type="text" id="serverUrl" placeholder="Server URL" value="">
@@ -184,6 +223,11 @@
             <span class="status-indicator"></span>
             <span id="statusText">Disconnected</span>
         </div>
+
+        <div id="iosInstallHint" class="hidden">
+            <strong>Add to Home Screen</strong>
+            Tap the share icon and choose “Add to Home Screen” to install Pixel Mage Arena.
+        </div>
     </div>
     
     <!-- Game Scripts -->
@@ -199,6 +243,9 @@
         let game = null;
         let network = null;
         let input = null;
+        let deferredInstallPrompt = null;
+        const installButton = document.getElementById('btnInstallApp');
+        const iosInstallHint = document.getElementById('iosInstallHint');
         const DEFAULT_ASPECT_RATIO = 16 / 9;
         const IPHONE_LANDSCAPE_ASPECT_RATIO = 19.5 / 9;
         const CANVAS_VIEWPORT_PADDING = 0.95;
@@ -244,6 +291,8 @@
             if (game) {
                 game.onCanvasResized();
             }
+
+            updateIOSInstallHint();
         }
 
         function getDefaultWebSocketUrl() {
@@ -257,10 +306,63 @@
                 return `${protocol}//${hostname}:8080`;
             }
         }
+
+        function isStandaloneMode() {
+            return window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+        }
+
+        function shouldShowIOSHint() {
+            if (!iosInstallHint) return false;
+            const ua = window.navigator.userAgent || '';
+            const isIOS = /iphone|ipad|ipod/i.test(ua);
+            const isStandalone = isStandaloneMode() || window.navigator.standalone;
+            return isIOS && !isStandalone;
+        }
+
+        function updateIOSInstallHint() {
+            if (!iosInstallHint) return;
+            if (shouldShowIOSHint()) {
+                iosInstallHint.classList.remove('hidden');
+            } else {
+                iosInstallHint.classList.add('hidden');
+            }
+        }
         
         window.addEventListener('DOMContentLoaded', () => {
             document.getElementById('serverUrl').value = getDefaultWebSocketUrl();
             resizeCanvasToViewport();
+            updateIOSInstallHint();
+        });
+
+        if (installButton) {
+            installButton.addEventListener('click', async () => {
+                if (!deferredInstallPrompt) return;
+                installButton.disabled = true;
+                deferredInstallPrompt.prompt();
+                try {
+                    await deferredInstallPrompt.userChoice;
+                } finally {
+                    deferredInstallPrompt = null;
+                    installButton.classList.add('hidden');
+                    installButton.disabled = false;
+                }
+            });
+        }
+
+        window.addEventListener('beforeinstallprompt', (event) => {
+            event.preventDefault();
+            deferredInstallPrompt = event;
+            if (installButton) {
+                installButton.classList.remove('hidden');
+            }
+        });
+
+        window.addEventListener('appinstalled', () => {
+            deferredInstallPrompt = null;
+            if (installButton) {
+                installButton.classList.add('hidden');
+            }
+            updateIOSInstallHint();
         });
 
         function startSinglePlayer() {
@@ -387,6 +489,12 @@
         // Handle window resize
         window.addEventListener('resize', resizeCanvasToViewport);
         window.addEventListener('orientationchange', resizeCanvasToViewport);
+        window.addEventListener('orientationchange', updateIOSInstallHint);
+        window.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                updateIOSInstallHint();
+            }
+        });
         
         // Prevent accidental page unload
         window.addEventListener('beforeunload', (e) => {
@@ -395,6 +503,14 @@
                 e.returnValue = '';
             }
         });
+
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').catch((error) => {
+                    console.error('Service worker registration failed:', error);
+                });
+            });
+        }
     </script>
 </body>
 </html>
