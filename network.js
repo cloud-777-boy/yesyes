@@ -31,8 +31,6 @@ class NetworkManager {
         this.latency = 0;
         this.serverUrl = null;
         this.appliedTerrainMods = new Map();
-        this.needsTerrainSnapshotUpload = false;
-        this.receivedTerrainSnapshot = false;
     }
 
     attachEngine(engine) {
@@ -205,7 +203,6 @@ class NetworkManager {
                 this.engine.loadSandChunks(msg.sandChunks);
             }
         }
-        this.needsTerrainSnapshotUpload = !!msg.needsTerrainSnapshot;
 
         if (!this.engine.players.has(this.playerId)) {
             this.engine.addPlayer(this.playerId, msg.spawnX, msg.spawnY, msg.selectedSpell);
@@ -224,8 +221,6 @@ class NetworkManager {
             this.options.onEngineReady(this.engine, msg);
             this._invokedEngineReady = true;
         }
-
-        this.uploadTerrainSnapshotIfNeeded();
 
         if (typeof this.options.onWelcome === 'function') {
             this.options.onWelcome(msg);
@@ -389,21 +384,9 @@ class NetworkManager {
         if (!this.engineReady || !snapshot) return;
         this.engine.loadTerrainSnapshot(snapshot);
         this.appliedTerrainMods.clear();
-        this.receivedTerrainSnapshot = true;
-        this.needsTerrainSnapshotUpload = false;
         if (typeof this.options.onTerrainSnapshot === 'function') {
             this.options.onTerrainSnapshot(snapshot);
         }
-    }
-
-    uploadTerrainSnapshotIfNeeded() {
-        if (!this.engineReady || !this.needsTerrainSnapshotUpload) return;
-        if (!this.engine || typeof this.engine.getTerrainSnapshot !== 'function') return;
-        const snapshot = this.engine.getTerrainSnapshot();
-        if (!snapshot || !this.connected) return;
-        this.send({ type: 'terrain_snapshot', snapshot });
-        this.needsTerrainSnapshotUpload = false;
-        this.appliedTerrainMods.clear();
     }
 
     sendInput(input) {
