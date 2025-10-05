@@ -61,6 +61,8 @@ class GameServer {
         this.players = new Map();
         this.tick = 0;
         this.terrainModifications = [];
+        this.maxTerrainModHistory = 1024;
+        this.maxTerrainModBroadcast = 64;
         this.playerCounter = 0;
         this.seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
         this.random = DeterministicRandom ? new DeterministicRandom(this.seed) : null;
@@ -110,7 +112,8 @@ class GameServer {
                 spawnX: player.x,
                 spawnY: player.y,
                 selectedSpell: player.selectedSpell,
-                seed: this.seed
+                seed: this.seed,
+                terrainMods: this.terrainModifications.slice()
             });
             
             this.broadcast({
@@ -234,14 +237,18 @@ class GameServer {
     }
     
     handleTerrainDestruction(playerId, msg) {
-        this.terrainModifications.push({
+        const mod = {
             tick: this.tick,
             x: msg.x,
             y: msg.y,
             radius: msg.radius,
             explosive: msg.explosive
-        });
-        
+        };
+        this.terrainModifications.push(mod);
+        if (this.terrainModifications.length > this.maxTerrainModHistory) {
+            this.terrainModifications.splice(0, this.terrainModifications.length - this.maxTerrainModHistory);
+        }
+
         this.broadcast({
             type: 'terrain_update',
             x: msg.x,
@@ -297,7 +304,7 @@ class GameServer {
                 selectedSpell: p.selectedSpell,
                 lastProcessedInput: p.lastInputSequence
             })),
-            terrainMods: this.terrainModifications.slice(-10)
+            terrainMods: this.terrainModifications.slice(-this.maxTerrainModBroadcast)
         };
         
         this.broadcast(state);

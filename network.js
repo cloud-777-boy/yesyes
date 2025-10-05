@@ -245,16 +245,8 @@ class NetworkManager {
             }
         }
 
-        if (msg.terrainMods && this.engine) {
-            for (const mod of msg.terrainMods) {
-                const key = `${mod.x}:${mod.y}:${mod.radius}:${mod.explosive ? 1 : 0}`;
-                const newTick = typeof mod.tick === 'number' ? mod.tick : this.confirmedTick;
-                const previousTick = this.appliedTerrainMods.get(key);
-                if (previousTick !== undefined && newTick <= previousTick) continue;
-                this.appliedTerrainMods.set(key, newTick);
-                this.pruneTerrainHistory();
-                this.engine.destroyTerrain(mod.x, mod.y, mod.radius, mod.explosive, false);
-            }
+        if (Array.isArray(msg.terrainMods) && this.engine) {
+            this.applyTerrainMods(msg.terrainMods);
         }
     }
 
@@ -266,15 +258,7 @@ class NetworkManager {
 
     handleTerrainUpdate(msg) {
         if (!this.engineReady) return;
-        const key = `${msg.x}:${msg.y}:${msg.radius}:${msg.explosive ? 1 : 0}`;
-        const newTick = typeof msg.tick === 'number' ? msg.tick : this.currentTick;
-        const previousTick = this.appliedTerrainMods.get(key);
-        if (previousTick !== undefined && newTick <= previousTick) {
-            return;
-        }
-        this.appliedTerrainMods.set(key, newTick);
-        this.pruneTerrainHistory();
-        this.engine.destroyTerrain(msg.x, msg.y, msg.radius, msg.explosive, false);
+        this.applyTerrainMods([msg]);
     }
 
     pruneTerrainHistory() {
@@ -282,6 +266,28 @@ class NetworkManager {
             const first = this.appliedTerrainMods.keys().next();
             if (first.done) break;
             this.appliedTerrainMods.delete(first.value);
+        }
+    }
+
+    applyTerrainMods(mods) {
+        if (!Array.isArray(mods) || !this.engine) return;
+        const sortedMods = mods.slice().sort((a, b) => {
+            const ta = typeof a.tick === 'number' ? a.tick : this.confirmedTick;
+            const tb = typeof b.tick === 'number' ? b.tick : this.confirmedTick;
+            if (ta !== tb) return ta - tb;
+            const keyA = `${a.x}:${a.y}:${a.radius}:${a.explosive ? 1 : 0}`;
+            const keyB = `${b.x}:${b.y}:${b.radius}:${b.explosive ? 1 : 0}`;
+            return keyA.localeCompare(keyB);
+        });
+
+        for (const mod of sortedMods) {
+            const key = `${mod.x}:${mod.y}:${mod.radius}:${mod.explosive ? 1 : 0}`;
+            const newTick = typeof mod.tick === 'number' ? mod.tick : this.confirmedTick;
+            const previousTick = this.appliedTerrainMods.get(key);
+            if (previousTick !== undefined && newTick <= previousTick) continue;
+            this.appliedTerrainMods.set(key, newTick);
+            this.pruneTerrainHistory();
+            this.engine.destroyTerrain(mod.x, mod.y, mod.radius, mod.explosive, false);
         }
     }
 
