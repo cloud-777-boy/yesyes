@@ -182,7 +182,7 @@ class Player {
         const spell = this.spells[this.selectedSpell];
         const spawnX = wrapHorizontal(staffEndX, engine.width);
         engine.spawnProjectile(spawnX, staffEndY, vx, vy, spell, this.id);
-        
+
         // Particle effect
         const color = this.getSpellColor(spell);
         engine.spawnParticles(spawnX, staffEndY, 5, color);
@@ -506,4 +506,12 @@ class Player {
         this.alive = data.alive;
         this.selectedSpell = this.normalizeSpellIndex(data.selectedSpell);
     }
+}
+
+if (typeof globalThis !== 'undefined') {
+    globalThis.Player = globalThis.Player || Player;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = Player;
 }

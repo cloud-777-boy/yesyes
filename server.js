@@ -13,12 +13,20 @@
 const WebSocket = require('ws');
 require('./deterministic.js');
 const DeterministicRandom = globalThis.DeterministicRandom;
+const { wrapHorizontal } = require('./terrain.js');
+require('./physics.js');
+require('./player.js');
+require('./projectile.js');
+const GameEngine = require('./engine.js');
+
+const WORLD_WIDTH = 11200;
+const WORLD_HEIGHT = 900;
 
 class GameServer {
     constructor(port = 8080) {
         this.port = port;
         this.wss = new WebSocket.Server({ port: this.port });
-        
+
         // Game state
         this.players = new Map();
         this.tick = 0;
@@ -29,6 +37,10 @@ class GameServer {
         this.playerCounter = 0;
         this.seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
         this.random = DeterministicRandom ? new DeterministicRandom(this.seed) : null;
+        this.engine = this.createAuthoritativeEngine();
+        this.terrainSnapshot = this.engine ? this.engine.getTerrainSnapshot() : null;
+        this.tick = this.engine ? this.engine.tick : 0;
+        this.currentSimulationTick = this.tick;
         
         // Network settings
         this.tickRate = 60; // Server updates per second
@@ -41,7 +53,18 @@ class GameServer {
         this.setupServer();
         this.startGameLoop();
     }
-    
+
+    createAuthoritativeEngine() {
+        const engine = new GameEngine(null, true, { seed: this.seed });
+        engine.init();
+        engine.onProjectileSpawn = (projectile) => this.handleServerProjectileSpawn(projectile);
+        engine.onTerrainDestruction = ({ x, y, radius, explosive, broadcast }) => {
+            if (broadcast === false) return;
+            this.recordAndBroadcastTerrainModification(x, y, radius, explosive);
+        };
+        return engine;
+    }
+
     setupServer() {
         this.wss.on('connection', (ws, req) => {
             const playerId = this.generatePlayerId();
@@ -56,36 +79,43 @@ class GameServer {
             const player = {
                 id: playerId,
                 ws: ws,
-                x: spawnX,
-                y: spawnY,
-                vx: 0,
-                vy: 0,
-                health: 100,
-                maxHealth: 100,
-                alive: true,
-                aimAngle: 0,
                 selectedSpell: this.getRandomSpellIndex(playerId),
                 lastInputSequence: 0,
                 joinTime: Date.now()
             };
-            
+
             this.players.set(playerId, player);
-            
+
+            if (this.engine && typeof this.engine.addPlayer === 'function') {
+                const enginePlayer = this.engine.addPlayer(playerId, spawnX, spawnY, player.selectedSpell);
+                if (enginePlayer) {
+                    enginePlayer.alive = true;
+                }
+            }
+
             // Send welcome message
-            const needsSnapshot = !this.terrainSnapshot;
             const welcomePayload = {
                 type: 'welcome',
                 playerId: playerId,
                 tick: this.tick,
-                spawnX: player.x,
-                spawnY: player.y,
+                spawnX: spawnX,
+                spawnY: spawnY,
                 selectedSpell: player.selectedSpell,
                 seed: this.seed,
-                needsTerrainSnapshot: needsSnapshot,
+                needsTerrainSnapshot: false,
                 terrainMods: this.terrainModifications.slice(-this.maxTerrainModBroadcast)
             };
             if (this.terrainSnapshot) {
                 welcomePayload.terrainSnapshot = this.terrainSnapshot;
+            }
+            if (this.engine) {
+                const initialSand = this.engine.serializeSandChunks(false);
+                if (initialSand) {
+                    welcomePayload.sandChunks = initialSand;
+                }
+                if (typeof this.engine.chunkSize === 'number') {
+                    welcomePayload.chunkSize = this.engine.chunkSize;
+                }
             }
             this.sendToPlayer(playerId, welcomePayload);
             
@@ -93,19 +123,20 @@ class GameServer {
             this.broadcast({
                 type: 'player_joined',
                 playerId: playerId,
-                x: player.x,
-                y: player.y,
+                x: spawnX,
+                y: spawnY,
                 selectedSpell: player.selectedSpell
             }, playerId);
             
             // Send existing players to new player
             for (const [id, p] of this.players.entries()) {
                 if (id !== playerId) {
+                    const existingPlayer = this.engine ? this.engine.players.get(id) : null;
                     this.sendToPlayer(playerId, {
                         type: 'player_joined',
                         playerId: id,
-                        x: p.x,
-                        y: p.y,
+                        x: existingPlayer ? existingPlayer.x : 0,
+                        y: existingPlayer ? existingPlayer.y : 0,
                         selectedSpell: p.selectedSpell
                     });
                 }
@@ -126,7 +157,11 @@ class GameServer {
             ws.on('close', () => {
                 console.log(`[${new Date().toISOString()}] Player ${playerId} disconnected`);
                 this.players.delete(playerId);
-                
+
+                if (this.engine && typeof this.engine.removePlayer === 'function') {
+                    this.engine.removePlayer(playerId);
+                }
+
                 this.broadcast({
                     type: 'player_left',
                     playerId: playerId
@@ -175,84 +210,41 @@ class GameServer {
     
     handlePlayerInput(playerId, input) {
         const player = this.players.get(playerId);
-        if (!player || !player.alive) return;
-        
-        // Basic server-side physics (simplified)
-        // In production, validate all movements
-        
-        if (input.left) player.x -= 2;
-        if (input.right) player.x += 2;
-        if (input.jump && player.grounded) player.vy = -6;
-        
-        // Bounds check
-        player.x = Math.max(0, Math.min(player.x, 1600));
-        
-        // Update aim
-        player.aimAngle = Math.atan2(
-            input.mouseY - (player.y + 6),
-            input.mouseX - (player.x + 3)
-        );
-        
-        // Track input sequence for reconciliation
-        if (input.sequence) {
+        const enginePlayer = this.engine ? this.engine.players.get(playerId) : null;
+        if (!player || !enginePlayer || !enginePlayer.alive) return;
+
+        enginePlayer.input.left = !!input.left;
+        enginePlayer.input.right = !!input.right;
+        enginePlayer.input.jump = !!input.jump;
+        enginePlayer.input.shoot = !!input.shoot;
+
+        if (typeof input.mouseX === 'number') {
+            enginePlayer.input.mouseX = wrapHorizontal(input.mouseX, this.engine.width);
+        }
+        if (typeof input.mouseY === 'number') {
+            enginePlayer.input.mouseY = Math.max(0, Math.min(input.mouseY, this.engine.height));
+        }
+
+        if (typeof input.sequence === 'number') {
             player.lastInputSequence = input.sequence;
         }
-        
-        // Acknowledge input
+
         this.sendToPlayer(playerId, {
             type: 'input_ack',
             sequence: input.sequence
         });
     }
-    
-    handleProjectile(playerId, msg) {
-        // Validate projectile (basic anti-cheat)
-        const player = this.players.get(playerId);
-        if (!player || !player.alive) return;
-        
-        // Broadcast to all other players
-        this.broadcast({
-            type: 'projectile',
-            x: msg.x,
-            y: msg.y,
-            vx: msg.vx,
-            vy: msg.vy,
-            type: msg.type,
-            ownerId: playerId
-        }, playerId);
-    }
-    
-    handleTerrainDestruction(playerId, msg) {
-        const mod = {
-            tick: this.tick,
-            x: msg.x,
-            y: msg.y,
-            radius: msg.radius,
-            explosive: msg.explosive
-        };
-        this.terrainModifications.push(mod);
-        if (this.terrainModifications.length > this.maxTerrainModHistory) {
-            this.terrainModifications.splice(0, this.terrainModifications.length - this.maxTerrainModHistory);
-        }
 
-        this.broadcast({
-            type: 'terrain_update',
-            x: msg.x,
-            y: msg.y,
-            radius: msg.radius,
-            explosive: msg.explosive,
-            tick: this.tick
-        });
+    handleProjectile(playerId, msg) {
+        console.warn(`[${new Date().toISOString()}] Ignoring client projectile message from ${playerId}; server simulates projectiles.`);
+    }
+
+    handleTerrainDestruction(playerId, msg) {
+        console.warn(`[${new Date().toISOString()}] Ignoring client terrain destruction from ${playerId}; server terrain is authoritative.`);
     }
 
     handleTerrainSnapshot(playerId, snapshot) {
-        if (!snapshot || this.terrainSnapshot) {
-            return;
-        }
-        this.terrainSnapshot = snapshot;
-        this.terrainModifications = [];
-        console.log(`[${new Date().toISOString()}] Terrain snapshot received from ${playerId}. Broadcasting to peers.`);
-        this.broadcast({ type: 'terrain_snapshot', snapshot }, playerId);
+        console.warn(`[${new Date().toISOString()}] Ignoring terrain snapshot from ${playerId}; server terrain is authoritative.`);
     }
     
     startGameLoop() {
@@ -261,7 +253,6 @@ class GameServer {
         
         // Physics tick
         setInterval(() => {
-            this.tick++;
             this.updatePhysics();
         }, tickInterval);
         
@@ -277,55 +268,58 @@ class GameServer {
     }
     
     updatePhysics() {
-        // Server-side physics simulation
-        for (const [id, player] of this.players.entries()) {
-            if (!player.alive) continue;
-            
-            // Apply gravity
-            player.vy += 0.3;
-            
-            // Apply velocity
-            player.y += player.vy;
-            
-            // Simple ground collision
-            if (player.y > 300) {
-                player.y = 300;
-                player.vy = 0;
-                player.grounded = true;
-            } else {
-                player.grounded = false;
-            }
-            
-            // Friction
-            player.vx *= 0.8;
-        }
+        if (!this.engine) return;
+        const dt = this.engine.fixedTimeStep || (1000 / this.tickRate);
+        const nextTick = this.engine.tick + 1;
+        this.currentSimulationTick = nextTick;
+        this.engine.update(dt);
+        this.engine.tick = nextTick;
+        this.tick = nextTick;
     }
-    
+
     broadcastState() {
         const state = {
             type: 'state',
             tick: this.tick,
             seed: this.seed,
-            players: Array.from(this.players.values()).map(p => ({
-                id: p.id,
-                x: p.x,
-                y: p.y,
-                vx: p.vx,
-                vy: p.vy,
-                health: p.health,
-                alive: p.alive,
-                aimAngle: p.aimAngle,
-                selectedSpell: p.selectedSpell,
-                lastProcessedInput: p.lastInputSequence
-            })),
             terrainMods: this.terrainModifications.slice(-this.maxTerrainModBroadcast)
         };
-        
+
+        if (this.engine) {
+            const engineState = this.engine.getState();
+            if (engineState) {
+                if (typeof engineState.chunkSize === 'number') {
+                    state.chunkSize = engineState.chunkSize;
+                }
+                const players = Array.isArray(engineState.players) ? engineState.players : [];
+                state.players = players.map((p) => ({
+                    ...p,
+                    lastProcessedInput: this.players.get(p.id)?.lastInputSequence || 0
+                }));
+                state.projectiles = Array.isArray(engineState.projectiles) ? engineState.projectiles : [];
+                if (engineState.sandChunks) {
+                    state.sandChunks = engineState.sandChunks;
+                }
+                if (engineState.terrain) {
+                    state.terrain = engineState.terrain;
+                }
+                if (typeof engineState.sand === 'number') {
+                    state.sand = engineState.sand;
+                }
+            }
+        }
+
+        if (!Array.isArray(state.players)) {
+            state.players = [];
+        }
+        if (!Array.isArray(state.projectiles)) {
+            state.projectiles = [];
+        }
+
         this.broadcast(state);
-        
-        // Clear old terrain modifications
-        if (this.terrainModifications.length > 100) {
-            this.terrainModifications = this.terrainModifications.slice(-50);
+
+        if (this.terrainModifications.length > this.maxTerrainModHistory) {
+            this.terrainModifications = this.terrainModifications.slice(-this.maxTerrainModHistory);
         }
     }
     
@@ -372,6 +366,42 @@ class GameServer {
         console.log(`   Messages/sec: ${messagesPerSecond}`);
         console.log(`   Total messages: ${this.totalMessages}`);
         console.log('═══════════════════════════════════════');
+    }
+
+    recordAndBroadcastTerrainModification(x, y, radius, explosive) {
+        const mod = {
+            tick: this.currentSimulationTick ?? this.tick,
+            x,
+            y,
+            radius,
+            explosive
+        };
+        this.terrainModifications.push(mod);
+        if (this.terrainModifications.length > this.maxTerrainModHistory) {
+            this.terrainModifications.splice(0, this.terrainModifications.length - this.maxTerrainModHistory);
+        }
+        this.broadcast({
+            type: 'terrain_update',
+            x: mod.x,
+            y: mod.y,
+            radius: mod.radius,
+            explosive: mod.explosive,
+            tick: mod.tick
+        });
+    }
+
+    handleServerProjectileSpawn(projectile) {
+        if (!projectile) return;
+        const payload = {
+            type: 'projectile',
+            x: projectile.x,
+            y: projectile.y,
+            vx: projectile.vx,
+            vy: projectile.vy,
+            type: projectile.type,
+            ownerId: projectile.ownerId
+        };
+        this.broadcast(payload);
     }
 }
 

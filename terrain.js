@@ -61,8 +61,8 @@ function shortestWrappedDelta(a, b, width) {
 }
 
 if (typeof globalThis !== 'undefined') {
-    globalThis.wrapHorizontal = wrapHorizontal;
-    globalThis.shortestWrappedDelta = shortestWrappedDelta;
+    globalThis.wrapHorizontal = globalThis.wrapHorizontal || wrapHorizontal;
+    globalThis.shortestWrappedDelta = globalThis.shortestWrappedDelta || shortestWrappedDelta;
 }
 
 /**
@@ -1269,4 +1269,20 @@ class SimplexNoise {
         const v = h < 2 ? y : x;
         return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
     }
+}
+
+if (typeof globalThis !== 'undefined') {
+    globalThis.Terrain = globalThis.Terrain || Terrain;
+    globalThis.SimplexNoise = globalThis.SimplexNoise || SimplexNoise;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        Terrain,
+        SimplexNoise,
+        wrapHorizontal,
+        shortestWrappedDelta,
+        encodeBytesToBase64,
+        decodeBase64ToBytes
+    };
 }

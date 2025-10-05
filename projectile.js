@@ -80,48 +80,61 @@ class Projectile {
         
         const stepX = this.vx;
         const stepY = this.vy;
-        if (engine) {
-            const hit = this.raycast(engine, this.x, this.y, stepX, stepY);
-            this.x = wrapHorizontal(hit.x, engine.width);
-            this.y = hit.y;
+        const isAuthoritative = engine ? !!engine.isServer : false;
 
-            if (hit.collided) {
-                this.explode(engine);
-                return;
+        if (engine) {
+            if (isAuthoritative) {
+                const hit = this.raycast(engine, this.x, this.y, stepX, stepY);
+                this.x = wrapHorizontal(hit.x, engine.width);
+                this.y = hit.y;
+
+                if (hit.collided) {
+                    this.explode(engine);
+                    return;
+                }
+            } else {
+                this.x = wrapHorizontal(this.x + stepX, engine.width);
+                this.y += stepY;
             }
         } else {
             this.x += stepX;
             this.y += stepY;
         }
         
-        // Spawn trail particles
-        this.particleTimer += dt;
-        if (this.particleTimer > 30) {
-            engine.spawnParticles(this.x, this.y, 2, this.color);
-            this.particleTimer = 0;
-        }
-        
-        // Check collision with terrain
-        if (engine.terrain.isSolid(Math.floor(this.x), Math.floor(this.y))) {
-            this.explode(engine);
-            return;
-        }
-        
-        // Check collision with players
-        for (const [id, player] of engine.players.entries()) {
-            if (id === this.ownerId) continue;
-            if (!player.alive) continue;
-            
-            if (this.checkPlayerCollision(player, engine)) {
-                player.takeDamage(this.damage);
-                
-                if (!this.piercing) {
-                    this.explode(engine);
-                    return;
-                }
+        // Spawn trail particles for visual feedback
+        if (engine && typeof engine.spawnParticles === 'function') {
+            this.particleTimer += dt;
+            if (this.particleTimer > 30) {
+                engine.spawnParticles(this.x, this.y, 2, this.color);
+                this.particleTimer = 0;
             }
         }
         
+        if (!engine) return;
+
+        if (isAuthoritative) {
+            // Check collision with terrain
+            if (engine.terrain.isSolid(Math.floor(this.x), Math.floor(this.y))) {
+                this.explode(engine);
+                return;
+            }
+
+            // Check collision with players
+            for (const [id, player] of engine.players.entries()) {
+                if (id === this.ownerId) continue;
+                if (!player.alive) continue;
+
+                if (this.checkPlayerCollision(player, engine)) {
+                    player.takeDamage(this.damage);
+
+                    if (!this.piercing) {
+                        this.explode(engine);
+                        return;
+                    }
+                }
+            }
+        }
+
         // Bounds check (vertical only, horizontal wraps)
         if (this.y < 0 || this.y > engine.height) {
             this.dead = true;
@@ -268,4 +281,12 @@ class Projectile {
             lifetime: this.lifetime
         };
     }
+}
+
+if (typeof globalThis !== 'undefined') {
+    globalThis.Projectile = globalThis.Projectile || Projectile;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = Projectile;
 }

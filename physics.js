@@ -561,3 +561,17 @@ class Particle {
         ctx.globalAlpha = 1.0;
     }
 }
+
+if (typeof globalThis !== 'undefined') {
+    globalThis.SandActivityLevel = globalThis.SandActivityLevel || SandActivityLevel;
+    globalThis.SandParticle = globalThis.SandParticle || SandParticle;
+    globalThis.Particle = globalThis.Particle || Particle;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        SandActivityLevel,
+        SandParticle,
+        Particle
+    };
+}

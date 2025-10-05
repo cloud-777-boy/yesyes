@@ -500,7 +500,7 @@
             
             // Initialize game
             const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
-            game = new GameEngine(canvas, false, { seed });
+            game = new GameEngine(canvas, true, { seed });
             game.init();
             game.onCanvasResized();
             
