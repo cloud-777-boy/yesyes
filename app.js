@@ -92,7 +92,9 @@ class GameServer {
                 aimAngle: 0,
                 selectedSpell: 0,
                 lastInputSequence: 0,
-                joinTime: Date.now()
+                joinTime: Date.now(),
+                lastJumpTime: 0,
+                lastUpdateTime: Date.now()
             };
             
             this.players.set(playerId, player);
@@ -182,23 +184,60 @@ class GameServer {
         const player = this.players.get(playerId);
         if (!player || !player.alive) return;
         
+        const now = Date.now();
+        const dt = (now - player.lastUpdateTime) / 1000; // Delta time in seconds
+        player.lastUpdateTime = now;
+        
         // Update aim angle
         player.aimAngle = Math.atan2(
             input.mouseY - (player.y + 6),
             input.mouseX - (player.x + 3)
         );
         
-        // Update from client input with basic validation
-        // Note: Client-authoritative for physics since server lacks terrain data
-        // This fixes the hovering bug caused by hardcoded ground collision
+        // Kinematics validation with plausible velocity envelopes
         if (input.x !== undefined && input.y !== undefined) {
-            // Basic bounds checking only
+            const dx = input.x - player.x;
+            const dy = input.y - player.y;
+            
+            // Physics constants
+            const maxHorizontalSpeed = 4; // pixels per frame
+            const maxVerticalSpeed = 15; // pixels per frame (falling)
+            const jumpVelocity = -7;
+            const jumpCooldown = 300; // ms between jumps
+            const gravity = 0.3;
+            
+            // Validate horizontal movement
+            if (Math.abs(dx) > maxHorizontalSpeed) {
+                console.log(`Rejected horizontal movement from ${playerId}: ${Math.abs(dx).toFixed(2)} > ${maxHorizontalSpeed}`);
+                return;
+            }
+            
+            // Validate vertical movement with gravity consideration
+            const expectedVy = player.vy + gravity;
+            
+            // Allow jump if: 1) jump input present, 2) cooldown elapsed, 3) not moving up too fast already
+            const canJump = input.jump && (now - player.lastJumpTime) > jumpCooldown && player.vy >= -2;
+            
+            if (dy < 0) { // Moving up
+                if (!canJump && dy < jumpVelocity * 0.5) {
+                    console.log(`Rejected upward movement from ${playerId}: dy=${dy.toFixed(2)}, canJump=${canJump}`);
+                    return;
+                }
+                if (canJump) {
+                    player.lastJumpTime = now;
+                }
+            } else if (dy > maxVerticalSpeed) { // Falling too fast
+                console.log(`Rejected downward movement from ${playerId}: ${dy.toFixed(2)} > ${maxVerticalSpeed}`);
+                return;
+            }
+            
+            // Accept position update
             player.x = Math.max(0, Math.min(input.x, 1600));
             player.y = Math.max(0, Math.min(input.y, 900));
             
-            // Update velocities
-            if (input.vx !== undefined) player.vx = input.vx;
-            if (input.vy !== undefined) player.vy = input.vy;
+            // Update velocities with validation
+            if (input.vx !== undefined) player.vx = Math.max(-10, Math.min(10, input.vx));
+            if (input.vy !== undefined) player.vy = Math.max(-20, Math.min(20, input.vy));
         }
         
         if (input.sequence) {

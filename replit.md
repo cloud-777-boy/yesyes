@@ -80,6 +80,13 @@ This is a multiplayer pixel destruction game featuring procedural terrain genera
 
 ## Recent Changes
 
+**2025-10-05**: Fixed multiplayer hovering bug
+- Removed hardcoded server-side ground collision at y=300
+- Changed to client-authoritative physics for terrain collision  
+- Server now accepts client positions with basic bounds validation
+- This fixes the visual hovering bug where players appeared to float over terrain
+- Note: Proper anti-cheat would require syncing terrain data to server (future enhancement)
+
 **2025-10-04**: Initial Replit setup
 - Created combined HTTP/WebSocket server (app.js)
 - Configured frontend to auto-detect WebSocket URL
