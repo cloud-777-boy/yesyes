@@ -2,8 +2,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
-require('./deterministic.js');
-const DeterministicRandom = globalThis.DeterministicRandom;
+const DeterministicRandom = require('./deterministic.js');
+const { Terrain } = require('./terrain.js');
 
 const PORT = process.env.PORT || 5000;
 
@@ -74,8 +74,22 @@ class GameServer {
         this.startTime = Date.now();
         this.totalMessages = 0;
         
+        this.generateServerTerrain();
         this.setupServer();
         this.startGameLoop();
+    }
+    
+    generateServerTerrain() {
+        console.log(`[${new Date().toISOString()}] Generating server terrain with seed: ${this.seed}`);
+        const terrain = new Terrain(1600, 900, this.random);
+        terrain.generate();
+        this.terrainSnapshot = {
+            width: terrain.width,
+            height: terrain.height,
+            pixels: terrain.serializeSnapshot().pixels,
+            seed: this.seed
+        };
+        console.log(`[${new Date().toISOString()}] Server terrain generated successfully`);
     }
     
     setupServer() {

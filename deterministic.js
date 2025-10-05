@@ -45,3 +45,7 @@ class DeterministicRandom {
 if (typeof globalThis !== 'undefined') {
     globalThis.DeterministicRandom = DeterministicRandom;
 }
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = DeterministicRandom;
+}
