@@ -387,7 +387,6 @@ class Player {
     riseOutOfGranular(engine) {
         if (!engine || !engine.terrain) return;
         if (!this.isInsideGranular(engine)) return;
-        if (this.grounded && Math.abs(this.vy) < 0.1) return;
 
         const maxLift = this.height + 2;
         let lifted = 0;

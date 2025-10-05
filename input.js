@@ -132,14 +132,28 @@ class InputManager {
     updateCamera(player) {
         const targetX = player.x + player.width / 2;
         const targetY = player.y + player.height / 2;
-        
-        // Smooth camera follow with horizontal wrapping
-        const lerpFactor = 0.1;
+
+        const dt = this.engine.fixedTimeStep || 16.666;
+        const baseStrength = 0.85;
+        const followStrength = 1 - Math.pow(1 - baseStrength, dt / 16.666);
+        const snapThreshold = 12;
+
         const dx = shortestWrappedDelta(targetX, this.engine.cameraX, this.engine.width);
-        this.engine.cameraX = wrapHorizontal(this.engine.cameraX + dx * lerpFactor, this.engine.width);
-        this.engine.cameraY += (targetY - this.engine.cameraY) * lerpFactor;
-        
-        // Clamp camera vertically to world bounds
+        const dy = targetY - this.engine.cameraY;
+
+        const strengthX = Math.abs(dx) > snapThreshold ? 1 : followStrength;
+        const strengthY = Math.abs(dy) > snapThreshold ? 1 : followStrength;
+
+        this.engine.cameraX = wrapHorizontal(this.engine.cameraX + dx * strengthX, this.engine.width);
+        this.engine.cameraY += dy * strengthY;
+
+        if (Math.abs(dx) < 0.01) {
+            this.engine.cameraX = wrapHorizontal(targetX, this.engine.width);
+        }
+        if (Math.abs(dy) < 0.01) {
+            this.engine.cameraY = targetY;
+        }
+
         const halfViewHeight = this.canvas.height / (2 * this.engine.pixelSize);
         this.engine.cameraY = Math.max(halfViewHeight, Math.min(this.engine.cameraY, this.engine.height - halfViewHeight));
     }

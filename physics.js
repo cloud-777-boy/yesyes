@@ -14,12 +14,18 @@ function wrapValue(value, width) {
     return wrapped;
 }
 
+const SandActivityLevel = {
+    EDGE: 0,
+    SHELL: 1,
+    BULK: 2
+};
+
 class SandParticle {
     constructor() {
         this.reset();
     }
 
-    init(x, y, material, color, drift = 0) {
+    init(x, y, material, color, drift = 0, mass = 1, isLiquid = false) {
         this.x = Math.floor(x);
         this.y = Math.floor(y);
         this.material = material;
@@ -32,6 +38,12 @@ class SandParticle {
         this.chunkY = 0;
         this.chunkKey = null;
         this.chunkIndex = -1;
+        this.activityLevel = SandActivityLevel.EDGE;
+        this.updateInterval = 1;
+        this.nextUpdateTick = 0;
+        this.lastClassifiedTick = -1;
+        this.mass = typeof mass === 'number' && mass > 0 ? mass : 1;
+        this.isLiquid = !!isLiquid;
     }
 
     reset() {
@@ -47,13 +59,19 @@ class SandParticle {
         this.chunkY = 0;
         this.chunkKey = null;
         this.chunkIndex = -1;
+        this.activityLevel = SandActivityLevel.EDGE;
+        this.updateInterval = 1;
+        this.nextUpdateTick = 0;
+        this.lastClassifiedTick = -1;
+        this.mass = 1;
+        this.isLiquid = false;
     }
 
     key() {
         return ((this.y << 16) | (this.x & 0xffff)) >>> 0;
     }
 
-    canOccupy(engine, occupancy, x, y) {
+    canOccupy(engine, occupancy, x, y, occupancyMap = null, allowFluidDisplacement = false) {
         if (y < 0 || y >= engine.height) return false;
         const wrappedX = wrapValue(x, engine.width) | 0;
         if (engine.terrain.getPixel(wrappedX, y) !== engine.terrain.EMPTY) {
@@ -61,21 +79,91 @@ class SandParticle {
         }
         const key = ((y << 16) | (wrappedX & 0xffff)) >>> 0;
         if (occupancy.has(key)) {
-            return false;
+            if (!occupancyMap) {
+                return false;
+            }
+            const occupant = occupancyMap.get(key);
+            if (!allowFluidDisplacement || !this.canDisplace(engine, occupant)) {
+                return false;
+            }
         }
         return true;
     }
 
-    tryMove(engine, occupancy, dx, dy) {
+    canDisplace(engine, occupant) {
+        if (!occupant || occupant.dead || occupant === this) return true;
+        const terrain = engine.terrain;
+        const selfProps = terrain.substances[this.material] || {};
+        const otherProps = terrain.substances[occupant.material] || {};
+        const otherIsLiquid = otherProps.type === 'liquid' || occupant.isLiquid;
+        if (!otherIsLiquid) {
+            return false;
+        }
+        const selfMass = this.mass || (selfProps.density || 1);
+        const otherMass = occupant.mass || (otherProps.density || 1);
+        return selfMass > otherMass;
+    }
+
+    tryMove(engine, occupancy, occupancyMap, dx, dy) {
         const targetX = this.x + dx;
         const targetY = this.y + dy;
-        if (!this.canOccupy(engine, occupancy, targetX, targetY)) {
+        if (targetY < 0 || targetY >= engine.height) {
             return false;
         }
         const wrappedX = wrapValue(targetX, engine.width) | 0;
+        const terrain = engine.terrain;
+        if (terrain.getPixel(wrappedX, targetY) !== terrain.EMPTY) {
+            return false;
+        }
+        const key = ((targetY << 16) | (wrappedX & 0xffff)) >>> 0;
+
+        let displaced = null;
+        if (occupancyMap && occupancyMap.has(key)) {
+            const occupant = occupancyMap.get(key);
+            if (occupant && !occupant.dead) {
+                if (!this.canDisplace(engine, occupant)) {
+                    return false;
+                }
+                displaced = occupant;
+            }
+            occupancy.delete(key);
+            occupancyMap.delete(key);
+        } else if (occupancy.has(key)) {
+            // Stale occupancy entry without map context
+            occupancy.delete(key);
+        }
+
+        const prevWrappedX = wrapValue(this.x, engine.width) | 0;
+        const prevY = this.y;
+
         this.x = wrappedX;
         this.y = targetY;
         this.restTime = 0;
+
+        if (displaced) {
+            const prevKey = ((prevY << 16) | (prevWrappedX & 0xffff)) >>> 0;
+            displaced.x = prevWrappedX;
+            displaced.y = prevY;
+            displaced.restTime = 0;
+            displaced.lastClassifiedTick = -1;
+            displaced.nextUpdateTick = Math.min(displaced.nextUpdateTick, (engine.tick || 0) + 1);
+            occupancy.add(prevKey);
+            if (occupancyMap) {
+                occupancyMap.set(prevKey, displaced);
+            }
+
+            const chunkSize = engine.chunkSize;
+            const totalChunksX = Math.ceil(engine.width / chunkSize);
+            const totalChunksY = Math.ceil(engine.height / chunkSize);
+            let newChunkX = Math.floor(prevWrappedX / chunkSize);
+            let newChunkY = Math.floor(prevY / chunkSize);
+            newChunkY = Math.max(0, Math.min(totalChunksY - 1, newChunkY));
+            newChunkX = ((newChunkX % totalChunksX) + totalChunksX) % totalChunksX;
+            if (displaced.chunkX !== newChunkX || displaced.chunkY !== newChunkY) {
+                engine.moveSandToChunk(displaced, newChunkX, newChunkY);
+            }
+        }
+
         return true;
     }
 
@@ -101,16 +189,132 @@ class SandParticle {
         this.dead = true;
     }
 
-    update(engine, occupancy, dt) {
+    classifyActivity(engine, occupancy, occupancyMap, tick) {
+        if (this.dead) {
+            this.activityLevel = SandActivityLevel.BULK;
+            this.lastClassifiedTick = tick;
+            return this.activityLevel;
+        }
+
+        if (this.lastClassifiedTick === tick) {
+            return this.activityLevel;
+        }
+
+        const terrain = engine.terrain;
+        if (!terrain) {
+            this.activityLevel = SandActivityLevel.EDGE;
+            this.lastClassifiedTick = tick;
+            return this.activityLevel;
+        }
+
+        const width = engine.width;
+        const height = engine.height;
+        const material = this.material;
+        const empty = terrain.EMPTY;
+        const props = terrain.substances[material] || {};
+        this.isLiquid = props.type === 'liquid';
+
+        // Treat a particle as "edge" when any nearby cell is empty or holds a
+        // different material. Inner shells are grouped into bulk scheduling to
+        // keep large blobs cheap to simulate.
+        const checkOffsets = (offsets) => {
+            for (let i = 0; i < offsets.length; i++) {
+                const dx = offsets[i][0];
+                const dy = offsets[i][1];
+                const nx = this.x + dx;
+                const ny = this.y + dy;
+                if (ny < 0 || ny >= height) {
+                    return true;
+                }
+                const wrappedX = wrapValue(nx, width) | 0;
+                const terrainPixel = terrain.getPixel(wrappedX, ny);
+                if (terrainPixel !== empty) {
+                    if (terrainPixel !== material) {
+                        return true;
+                    }
+                    continue;
+                }
+
+                const key = ((ny << 16) | (wrappedX & 0xffff)) >>> 0;
+                const neighbor = occupancyMap.get(key);
+                if (!neighbor) {
+                    return true;
+                }
+                if (neighbor.material !== material) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const primaryOffsets = [
+            [0, 1],
+            [-1, 0],
+            [1, 0],
+            [0, -1]
+        ];
+
+        if (checkOffsets(primaryOffsets)) {
+            this.activityLevel = SandActivityLevel.EDGE;
+        } else {
+            const secondaryOffsets = [
+                [-1, 1],
+                [1, 1],
+                [-2, 0],
+                [2, 0],
+                [0, 2],
+                [0, -2],
+                [-1, -1],
+                [1, -1]
+            ];
+
+            if (checkOffsets(secondaryOffsets)) {
+                this.activityLevel = SandActivityLevel.SHELL;
+            } else {
+                this.activityLevel = SandActivityLevel.BULK;
+            }
+        }
+
+        if (props.type === 'liquid' && this.activityLevel > SandActivityLevel.SHELL) {
+            this.activityLevel = SandActivityLevel.SHELL;
+        }
+
+        this.lastClassifiedTick = tick;
+        return this.activityLevel;
+    }
+
+    resolveUpdateInterval(engine) {
+        const terrain = engine ? engine.terrain : null;
+        if (!terrain) {
+            this.updateInterval = 1;
+            return this.updateInterval;
+        }
+
+        const props = terrain.substances[this.material] || {};
+        const config = engine.sandBlobConfig || {};
+        const solidIntervals = config.solidIntervals || [1, 3, 7];
+        const liquidIntervals = config.liquidIntervals || [1, 2, 5];
+        const table = props.type === 'liquid' ? liquidIntervals : solidIntervals;
+        const index = Math.min(table.length - 1, Math.max(0, this.activityLevel));
+        const interval = table[index] || 1;
+        this.updateInterval = interval < 1 ? 1 : Math.floor(interval);
+        return this.updateInterval;
+    }
+
+    update(engine, occupancy, dt, occupancyMap = null) {
         if (this.dead) return;
 
         const terrain = engine.terrain;
         const props = terrain.substances[this.material] || {};
         const isLiquid = props.type === 'liquid';
+        this.isLiquid = isLiquid;
 
         // Remove current position from occupancy while moving
         const previousKey = this.key();
         occupancy.delete(previousKey);
+        if (occupancyMap) {
+            occupancyMap.delete(previousKey);
+        }
 
         const timeStep = dt || 16;
         this.restTime += timeStep;
@@ -149,7 +353,7 @@ class SandParticle {
 
         let moved = false;
         for (const move of moveOrder) {
-            if (this.tryMove(engine, occupancy, move.dx, move.dy)) {
+            if (this.tryMove(engine, occupancy, occupancyMap, move.dx, move.dy)) {
                 this.restTime = 0;
                 moved = true;
                 break;
@@ -158,11 +362,15 @@ class SandParticle {
 
         if (!moved) {
             // Allow slow sideways creep when blocked
-            if (this.drift !== 0 && this.canOccupy(engine, occupancy, this.x + this.drift, this.y)) {
-                const targetX = this.x + this.drift;
-                const wrappedX = wrapValue(targetX, engine.width) | 0;
-                this.x = wrappedX;
-                this.restTime += timeStep * 0.5;
+            if (this.drift !== 0) {
+                if (this.tryMove(engine, occupancy, occupancyMap, this.drift, 0)) {
+                    this.restTime += timeStep * 0.5;
+                } else if (this.canOccupy(engine, occupancy, this.x + this.drift, this.y)) {
+                    const targetX = this.x + this.drift;
+                    const wrappedX = wrapValue(targetX, engine.width) | 0;
+                    this.x = wrappedX;
+                    this.restTime += timeStep * 0.5;
+                }
             }
 
             if (isLiquid) {
@@ -194,6 +402,9 @@ class SandParticle {
                 this.color = colorObj.hex;
             }
             occupancy.add(this.key());
+            if (occupancyMap) {
+                occupancyMap.set(this.key(), this);
+            }
         }
     }
 

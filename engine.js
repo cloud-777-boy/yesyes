@@ -20,6 +20,7 @@ class GameEngine {
         this.sandParticleCount = 0;
         this.sandPool = [];
         this.sandOccupancy = new Set();
+        this.sandOccupancyMap = new Map();
         this.activeChunkSet = new Set();
         this.activeChunkKeys = [];
         this.activeSandLists = [];
@@ -30,11 +31,21 @@ class GameEngine {
         this.sandPoolLimit = 5000;
         this.maxSandUpdatesPerFrame = 900;
         this.maxSandSpawnPerDestroy = 500;
-        this.sandUpdateCursor = 0;
+        this.sandAdaptiveCursor = 0;
         this.players = new Map();
         this.playerList = [];
         this.projectiles = [];
         this.particles = [];
+        // Adaptive sand scheduling keeps multiplayer deterministic while throttling
+        // interior blob updates. Intervals are tuned so edge particles update every
+        // frame, shell layers follow shortly after, and dense cores are revisited
+        // infrequently to minimize cost without breaking bulk motion.
+        this.sandBlobConfig = {
+            solidIntervals: [1, 3, 8],
+            liquidIntervals: [1, 2, 5],
+            solidRestBoost: [1, 1, 1.5],
+            liquidRestBoost: [1, 1, 1.2]
+        };
 
         // Physics settings (deterministic)
         this.gravity = 0.3;
@@ -75,7 +86,7 @@ class GameEngine {
         this.terrain.generate();
         this.sandChunks.clear();
         this.sandParticleCount = 0;
-        this.sandUpdateCursor = 0;
+        this.sandAdaptiveCursor = 0;
         this.sandPool.length = 0;
         this.activeChunkSet.clear();
         this.activeChunkKeys.length = 0;
@@ -390,7 +401,10 @@ class GameEngine {
         const sand = this.getSandParticleFromPool();
         const colorObj = this.terrain.getMaterialColor(material, x, y);
         const color = colorObj ? colorObj.hex : '#ffffff';
-        sand.init(x, y, material, color, 0);
+        const props = this.terrain.substances[material] || {};
+        const mass = typeof props.density === 'number' ? props.density : 1;
+        const isLiquid = props.type === 'liquid';
+        sand.init(x, y, material, color, 0, mass, isLiquid);
         const chunkX = Math.floor(x / this.chunkSize);
         let chunkY = Math.floor(y / this.chunkSize);
         const maxChunkY = Math.ceil(this.height / this.chunkSize) - 1;
@@ -505,24 +519,62 @@ class GameEngine {
     updateSand(dt) {
         const total = this.activeSandLookup.length;
         if (total === 0) {
-            this.sandUpdateCursor = 0;
+            this.sandAdaptiveCursor = 0;
             return;
         }
 
         const occupancy = this.sandOccupancy;
+        const occupancyMap = this.sandOccupancyMap;
         occupancy.clear();
+        occupancyMap.clear();
 
         for (let i = 0; i < total; i++) {
             const sand = this.activeSandLookup[i];
             if (!sand.dead) {
-                occupancy.add(sand.key());
+                const key = sand.key();
+                occupancy.add(key);
+                occupancyMap.set(key, sand);
             }
         }
 
-        const updates = Math.min(total, this.maxSandUpdatesPerFrame);
-        if (updates === 0) return;
+        const tick = this.tick;
+        const dtStep = dt || this.fixedTimeStep || 16.666;
+        const candidates = [];
 
-        this.sandUpdateCursor %= total;
+        for (let i = 0; i < total; i++) {
+            const sand = this.activeSandLookup[i];
+            if (sand.dead) continue;
+            sand.classifyActivity(this, occupancy, occupancyMap, tick);
+            sand.resolveUpdateInterval(this);
+            if (sand.nextUpdateTick <= tick) {
+                candidates.push(sand);
+            } else {
+                const terrain = this.terrain;
+                const substances = terrain ? terrain.substances : null;
+                const props = substances ? substances[sand.material] : null;
+                const restTable = props && props.type === 'liquid'
+                    ? this.sandBlobConfig.liquidRestBoost
+                    : this.sandBlobConfig.solidRestBoost;
+                const restIndex = Math.min(restTable.length - 1, sand.activityLevel);
+                const boost = restTable[restIndex] || 1;
+                sand.restTime = Math.min(sand.restTime + dtStep * boost, sand.settleDelay);
+            }
+        }
+
+        const candidateCount = candidates.length;
+        if (candidateCount === 0) {
+            this.sandAdaptiveCursor = 0;
+            this.pruneDeadSand();
+            return;
+        }
+
+        const updates = Math.min(candidateCount, this.maxSandUpdatesPerFrame);
+        if (updates === 0) {
+            this.pruneDeadSand();
+            return;
+        }
+
+        this.sandAdaptiveCursor %= candidateCount;
         let processed = 0;
 
         const chunkSize = this.chunkSize;
@@ -530,10 +582,11 @@ class GameEngine {
         const totalChunksY = Math.ceil(this.height / chunkSize);
 
         while (processed < updates) {
-            const idx = (this.sandUpdateCursor + processed) % total;
-            const sand = this.activeSandLookup[idx];
+            const idx = (this.sandAdaptiveCursor + processed) % candidateCount;
+            const sand = candidates[idx];
             if (!sand.dead) {
-                sand.update(this, occupancy, dt);
+                sand.update(this, occupancy, dt, occupancyMap);
+                sand.nextUpdateTick = tick + sand.updateInterval;
                 const newChunkX = Math.floor(sand.x / chunkSize);
                 let newChunkY = Math.floor(sand.y / chunkSize);
                 newChunkY = Math.max(0, Math.min(totalChunksY - 1, newChunkY));
@@ -545,8 +598,12 @@ class GameEngine {
             processed++;
         }
 
-        this.sandUpdateCursor = (this.sandUpdateCursor + updates) % total;
+        this.sandAdaptiveCursor = (this.sandAdaptiveCursor + updates) % candidateCount;
 
+        this.pruneDeadSand();
+    }
+
+    pruneDeadSand() {
         for (let i = this.activeSandLists.length - 1; i >= 0; i--) {
             const list = this.activeSandLists[i];
             let j = list.length;
@@ -570,6 +627,8 @@ class GameEngine {
         this.activeSandLookup.length = 0;
         this.activeSandLists.length = 0;
         this.activeSandChunkKeys.length = 0;
+        this.sandOccupancy.clear();
+        this.sandOccupancyMap.clear();
     }
 
     render() {
@@ -749,7 +808,11 @@ class GameEngine {
                 drift = Math.random() < 0.5 ? -1 : 1;
             }
 
-            sand.init(wrappedX, px.y, px.material, color, drift * explosionFalloff || drift);
+            const props = this.terrain.substances[px.material] || {};
+            const mass = typeof props.density === 'number' ? props.density : 1;
+            const isLiquid = props.type === 'liquid';
+            const driftValue = explosionFalloff ? drift * explosionFalloff : drift;
+            sand.init(wrappedX, px.y, px.material, color, driftValue, mass, isLiquid);
             const chunkX = Math.floor(wrappedX / this.chunkSize);
             const chunkY = Math.floor(px.y / this.chunkSize);
             this.addSandToChunk(sand, chunkX, chunkY);
@@ -872,7 +935,11 @@ class GameEngine {
                 const data = particles[j];
                 if (typeof data.x !== 'number' || typeof data.y !== 'number') continue;
                 const sand = this.getSandParticleFromPool();
-                sand.init(data.x, data.y, data.material || this.terrain.DIRT, data.color || '#ffffff', 0);
+                const material = data.material || this.terrain.DIRT;
+                const props = this.terrain.substances[material] || {};
+                const mass = typeof props.density === 'number' ? props.density : 1;
+                const isLiquid = props.type === 'liquid';
+                sand.init(data.x, data.y, material, data.color || '#ffffff', 0, mass, isLiquid);
                 this.addSandToChunk(sand, chunkX, chunkY);
                 this.sandParticleCount++;
             }
