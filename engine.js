@@ -391,6 +391,19 @@ class GameEngine {
         this.spawnPendingFluids(false);
 
         if (!this.isServer) {
+            const localPlayer = this.playerId ? this.players.get(this.playerId) : null;
+            if (localPlayer) {
+                localPlayer.update(dt, this);
+                if (this.network && typeof this.network.recordLocalState === 'function') {
+                    this.network.recordLocalState(this.tick, localPlayer);
+                }
+            } else if (!this.network) {
+                const players = this.playerList;
+                for (let i = 0; i < players.length; i++) {
+                    players[i].update(dt, this);
+                }
+            }
+
             for (let i = this.projectiles.length - 1; i >= 0; i--) {
                 const proj = this.projectiles[i];
                 proj.update(dt, this);

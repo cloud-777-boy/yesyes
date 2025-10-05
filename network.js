@@ -255,8 +255,12 @@ class NetworkManager {
             this.engine.terrain.applyModifications(msg.terrain);
         }
 
-        this.confirmedTick = msg.tick;
-        this.engine.tick = msg.tick;
+        const serverTick = Number.isFinite(msg.tick) ? msg.tick : this.confirmedTick;
+        this.confirmedTick = serverTick;
+        if (Number.isFinite(serverTick)) {
+            this.engine.tick = serverTick;
+            this.currentTick = Math.max(this.currentTick, serverTick);
+        }
 
         const playersData = Array.isArray(msg.players)
             ? msg.players.slice().sort((a, b) => a.id.localeCompare(b.id))
@@ -288,6 +292,7 @@ class NetworkManager {
         if (this.playerId) {
             const serverPlayer = playersData.find(p => p.id === this.playerId);
             if (serverPlayer) {
+                serverPlayer.tick = serverTick;
                 this.reconcileState(serverPlayer);
             }
         }
@@ -392,14 +397,45 @@ class NetworkManager {
     sendInput(input) {
         if (!this.connected || !this.playerId || !this.engineReady) return;
 
-        const localPlayer = this.engine.players.get(this.playerId);
+        const tick = (this.engine && typeof this.engine.tick === 'number')
+            ? this.engine.tick
+            : this.currentTick;
 
         input.sequence = this.inputSequence++;
-        input.tick = this.currentTick;
+        input.tick = tick;
+
+        this.currentTick = Math.max(this.currentTick, tick);
 
         this.pendingInputs.push({ ...input });
 
         this.send({ type: 'input', input });
+    }
+
+    recordLocalState(tick, player) {
+        if (!this.engineReady || !player || !Number.isFinite(tick)) return;
+
+        this.currentTick = Math.max(this.currentTick, tick);
+
+        const snapshot = {
+            tick,
+            x: player.x,
+            y: player.y,
+            vx: player.vx,
+            vy: player.vy,
+            aimAngle: player.aimAngle
+        };
+
+        const history = this.stateHistory;
+        const last = history[history.length - 1];
+        if (last && last.tick === tick) {
+            history[history.length - 1] = snapshot;
+            return;
+        }
+
+        history.push(snapshot);
+        if (history.length > this.maxHistorySize) {
+            history.splice(0, history.length - this.maxHistorySize);
+        }
     }
 
     applyInput(player, input) {
@@ -469,11 +505,196 @@ class NetworkManager {
 
     reconcileState(serverState) {
         if (!this.engineReady) return;
-        const localPlayer = this.engine.players.get(this.playerId);
+        const engine = this.engine;
+        const localPlayer = engine && engine.players ? engine.players.get(this.playerId) : null;
         if (!localPlayer) return;
 
-        localPlayer.deserialize(serverState);
-        this.pendingInputs.length = 0;
+        const serverTick = Number.isFinite(serverState.tick) ? serverState.tick : this.confirmedTick;
+        const effectiveTick = Number.isFinite(serverTick) ? serverTick : this.currentTick;
+        if (Number.isFinite(effectiveTick)) {
+            this.currentTick = Math.max(this.currentTick, effectiveTick);
+        }
+
+        const history = this.stateHistory;
+        let predictedState = null;
+        for (let i = history.length - 1; i >= 0; i--) {
+            if (history[i].tick === effectiveTick) {
+                predictedState = history[i];
+                break;
+            }
+        }
+
+        const worldWidth = engine && Number.isFinite(engine.width) ? engine.width : null;
+        const dx = (typeof shortestWrappedDelta === 'function' && worldWidth)
+            ? shortestWrappedDelta(serverState.x, localPlayer.x, worldWidth)
+            : (serverState.x - localPlayer.x);
+        const dy = serverState.y - localPlayer.y;
+        const distanceSq = dx * dx + dy * dy;
+        const catastrophicThresholdSq = 250000; // ~500px error: treat as teleport and snap
+
+        let correctedX = localPlayer.x;
+        let correctedY = localPlayer.y;
+        let correctedVx = localPlayer.vx;
+        let correctedVy = localPlayer.vy;
+
+        if (distanceSq > catastrophicThresholdSq) {
+            correctedX = serverState.x;
+            correctedY = serverState.y;
+            correctedVx = serverState.vx;
+            correctedVy = serverState.vy;
+        } else {
+            const distance = Math.sqrt(distanceSq);
+            const baseFactor = 0.18;
+            const latencyFactor = Math.min(0.3, (this.latency || 0) / 600);
+            const pendingFactor = Math.min(0.25, this.pendingInputs.length * 0.04);
+            const predictionMissFactor = predictedState
+                ? Math.min(0.2, Math.abs(predictedState.y - serverState.y) / 200)
+                : 0;
+            const distanceCatchup = Math.min(0.35, distance / 480);
+            const alpha = Math.min(
+                0.75,
+                Math.max(0.1, baseFactor + latencyFactor + pendingFactor + predictionMissFactor + distanceCatchup)
+            );
+
+            if (distance > 0.01) {
+                correctedX = localPlayer.x + dx * alpha;
+                correctedY = localPlayer.y + dy * alpha;
+            } else {
+                correctedX = serverState.x;
+                correctedY = serverState.y;
+            }
+
+            correctedVx = localPlayer.vx + (serverState.vx - localPlayer.vx) * alpha;
+            correctedVy = localPlayer.vy + (serverState.vy - localPlayer.vy) * alpha;
+        }
+
+        if (worldWidth && typeof wrapHorizontal === 'function') {
+            correctedX = wrapHorizontal(correctedX, worldWidth);
+        }
+
+        localPlayer.x = correctedX;
+        localPlayer.y = correctedY;
+        localPlayer.vx = correctedVx;
+        localPlayer.vy = correctedVy;
+
+        if (typeof serverState.health === 'number') {
+            localPlayer.health = serverState.health;
+        }
+        if (typeof serverState.alive === 'boolean') {
+            localPlayer.alive = serverState.alive;
+        }
+        if (typeof serverState.selectedSpell !== 'undefined') {
+            localPlayer.selectedSpell = (typeof localPlayer.normalizeSpellIndex === 'function')
+                ? localPlayer.normalizeSpellIndex(serverState.selectedSpell)
+                : serverState.selectedSpell;
+        }
+
+        if (typeof serverState.aimAngle === 'number') {
+            localPlayer.aimAngle = this.lerpAngle(localPlayer.aimAngle, serverState.aimAngle, 0.25);
+        }
+
+        const baseX = Number.isFinite(predictedState?.x)
+            ? predictedState.x
+            : Number.isFinite(serverState.x) ? serverState.x : correctedX;
+        const baseY = Number.isFinite(predictedState?.y)
+            ? predictedState.y
+            : Number.isFinite(serverState.y) ? serverState.y : correctedY;
+        const baseVx = Number.isFinite(predictedState?.vx)
+            ? predictedState.vx
+            : Number.isFinite(serverState.vx) ? serverState.vx : correctedVx;
+        const baseVy = Number.isFinite(predictedState?.vy)
+            ? predictedState.vy
+            : Number.isFinite(serverState.vy) ? serverState.vy : correctedVy;
+
+        const clampDelta = (value, limit) => {
+            if (!Number.isFinite(value)) return 0;
+            return Math.max(-limit, Math.min(limit, value));
+        };
+
+        const deltaX = clampDelta(correctedX - baseX, 96);
+        const deltaY = clampDelta(correctedY - baseY, 96);
+        const deltaVx = clampDelta(correctedVx - baseVx, 12);
+        const deltaVy = clampDelta(correctedVy - baseVy, 12);
+
+        const reconciledSnapshot = {
+            tick: effectiveTick,
+            x: correctedX,
+            y: correctedY,
+            vx: correctedVx,
+            vy: correctedVy,
+            aimAngle: localPlayer.aimAngle
+        };
+
+        const futureHistory = [];
+        for (let i = 0; i < history.length; i++) {
+            const entry = history[i];
+            if (!entry || !Number.isFinite(entry.tick)) continue;
+            if (Number.isFinite(effectiveTick) && entry.tick <= effectiveTick) continue;
+            futureHistory.push({
+                tick: entry.tick,
+                x: (Number.isFinite(entry.x) ? entry.x : correctedX) + deltaX,
+                y: (Number.isFinite(entry.y) ? entry.y : correctedY) + deltaY,
+                vx: (Number.isFinite(entry.vx) ? entry.vx : correctedVx) + deltaVx,
+                vy: (Number.isFinite(entry.vy) ? entry.vy : correctedVy) + deltaVy,
+                aimAngle: Number.isFinite(entry.aimAngle)
+                    ? this.normalizeAngle(entry.aimAngle)
+                    : localPlayer.aimAngle
+            });
+        }
+
+        const newHistory = [reconciledSnapshot, ...futureHistory].slice(0, this.maxHistorySize);
+        this.stateHistory = newHistory;
+
+        let latestPrediction = null;
+        for (let i = newHistory.length - 1; i >= 0; i--) {
+            const entry = newHistory[i];
+            if (!entry || !Number.isFinite(entry.tick)) continue;
+            if (!Number.isFinite(effectiveTick) || entry.tick > effectiveTick) {
+                latestPrediction = entry;
+                break;
+            }
+        }
+
+        if (latestPrediction) {
+            localPlayer.x = latestPrediction.x;
+            localPlayer.y = latestPrediction.y;
+            localPlayer.vx = latestPrediction.vx;
+            localPlayer.vy = latestPrediction.vy;
+            if (Number.isFinite(latestPrediction.aimAngle)) {
+                localPlayer.aimAngle = this.normalizeAngle(latestPrediction.aimAngle);
+            }
+        }
+
+        if (Number.isFinite(effectiveTick)) {
+            this.pendingInputs = this.pendingInputs.filter(input => input && Number.isFinite(input.tick) && input.tick > effectiveTick);
+        }
+    }
+
+    normalizeAngle(angle) {
+        if (!Number.isFinite(angle)) return 0;
+        const twoPi = Math.PI * 2;
+        let normalized = angle % twoPi;
+        if (normalized > Math.PI) {
+            normalized -= twoPi;
+        } else if (normalized < -Math.PI) {
+            normalized += twoPi;
+        }
+        return normalized;
+    }
+
+    lerpAngle(current, target, alpha) {
+        if (!Number.isFinite(target)) return current;
+        if (!Number.isFinite(current)) return this.normalizeAngle(target);
+        const clampedAlpha = Math.max(0, Math.min(1, alpha));
+        const start = this.normalizeAngle(current);
+        const end = this.normalizeAngle(target);
+        let delta = end - start;
+        if (delta > Math.PI) {
+            delta -= Math.PI * 2;
+        } else if (delta < -Math.PI) {
+            delta += Math.PI * 2;
+        }
+        return this.normalizeAngle(start + delta * clampedAlpha);
     }
 }
 

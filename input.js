@@ -120,9 +120,11 @@ class InputManager {
         // Send to network or apply locally
         if (this.network && this.network.connected) {
             this.network.sendInput(input);
+            // Client-side responsiveness: immediately apply latest inputs locally
+            player.input = { ...input };
         } else {
             // Offline mode - apply directly
-            player.input = input;
+            player.input = { ...input };
         }
         
         // Update camera to follow player
