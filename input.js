@@ -53,7 +53,7 @@ class InputManager {
             const camX = this.engine.cameraX - this.canvas.width / (2 * scale);
             const camY = this.engine.cameraY - this.canvas.height / (2 * scale);
             
-            this.mouseWorldX = this.mouseX / scale + camX;
+            this.mouseWorldX = wrapHorizontal(this.mouseX / scale + camX, this.engine.width);
             this.mouseWorldY = this.mouseY / scale + camY;
         });
         
@@ -86,7 +86,7 @@ class InputManager {
             const camX = this.engine.cameraX - this.canvas.width / (2 * scale);
             const camY = this.engine.cameraY - this.canvas.height / (2 * scale);
             
-            this.mouseWorldX = this.mouseX / scale + camX;
+            this.mouseWorldX = wrapHorizontal(this.mouseX / scale + camX, this.engine.width);
             this.mouseWorldY = this.mouseY / scale + camY;
             e.preventDefault();
         });
@@ -131,16 +131,14 @@ class InputManager {
         const targetX = player.x + player.width / 2;
         const targetY = player.y + player.height / 2;
         
-        // Smooth camera follow
+        // Smooth camera follow with horizontal wrapping
         const lerpFactor = 0.1;
-        this.engine.cameraX += (targetX - this.engine.cameraX) * lerpFactor;
+        const dx = shortestWrappedDelta(targetX, this.engine.cameraX, this.engine.width);
+        this.engine.cameraX = wrapHorizontal(this.engine.cameraX + dx * lerpFactor, this.engine.width);
         this.engine.cameraY += (targetY - this.engine.cameraY) * lerpFactor;
         
-        // Clamp camera to world bounds
-        const halfViewWidth = this.canvas.width / (2 * this.engine.pixelSize);
+        // Clamp camera vertically to world bounds
         const halfViewHeight = this.canvas.height / (2 * this.engine.pixelSize);
-        
-        this.engine.cameraX = Math.max(halfViewWidth, Math.min(this.engine.cameraX, this.engine.width - halfViewWidth));
         this.engine.cameraY = Math.max(halfViewHeight, Math.min(this.engine.cameraY, this.engine.height - halfViewHeight));
     }
     

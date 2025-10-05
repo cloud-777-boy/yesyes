@@ -1,256 +1,188 @@
 /**
- * PhysicsChunk - Broken terrain pieces with physics
+ * Sand Physics - Falling sand style debris simulation
  */
 
-class PhysicsChunk {
+function wrapValue(value, width) {
+    if (typeof wrapHorizontal === 'function') {
+        return wrapHorizontal(value, width);
+    }
+    if (!isFinite(width) || width <= 0) {
+        return value;
+    }
+    let wrapped = value % width;
+    if (wrapped < 0) wrapped += width;
+    return wrapped;
+}
+
+class SandParticle {
     constructor() {
         this.reset();
     }
-    
-    init(pixels, x, y, width, height) {
-        this.pixels = pixels;
-        this.x = x;
-        this.y = y;
-        this.width = width;
-        this.height = height;
-        
-        // Calculate center of mass
-        this.calculateCenterOfMass();
-        
-        // Physics
-        this.vx = 0;
-        this.vy = 0;
-        this.rotation = 0;
-        this.angularVelocity = (Math.random() - 0.5) * 0.1;
-        
-        this.grounded = false;
-        this.lifetime = 0;
-        this.maxLifetime = 10000; // 10 seconds
-        
-        // For splitting
-        this.health = pixels.length;
+
+    init(x, y, material, color, drift = 0) {
+        this.x = Math.floor(x);
+        this.y = Math.floor(y);
+        this.material = material;
+        this.color = color;
+        this.drift = Math.sign(drift);
+        this.restTime = 0;
+        this.settleDelay = 180; // ms before welding back into terrain
+        this.dead = false;
     }
-    
+
     reset() {
-        this.pixels = [];
         this.x = 0;
         this.y = 0;
-        this.width = 0;
-        this.height = 0;
-        this.vx = 0;
-        this.vy = 0;
-        this.rotation = 0;
-        this.angularVelocity = 0;
-        this.centerX = 0;
-        this.centerY = 0;
-        this.mass = 0;
-        this.grounded = false;
-        this.lifetime = 0;
-        this.health = 0;
+        this.material = 0;
+        this.color = '#ffffff';
+        this.drift = 0;
+        this.restTime = 0;
+        this.settleDelay = 180;
+        this.dead = true;
     }
-    
-    calculateCenterOfMass() {
-        let sumX = 0;
-        let sumY = 0;
-        
-        for (const px of this.pixels) {
-            sumX += px.x - this.x;
-            sumY += px.y - this.y;
+
+    key() {
+        return (this.y << 16) | (this.x & 0xffff);
+    }
+
+    canOccupy(engine, occupancy, x, y) {
+        if (y < 0 || y >= engine.height) return false;
+        const wrappedX = wrapValue(x, engine.width) | 0;
+        if (engine.terrain.getPixel(wrappedX, y) !== engine.terrain.EMPTY) {
+            return false;
         }
-        
-        this.centerX = sumX / this.pixels.length;
-        this.centerY = sumY / this.pixels.length;
-        this.mass = this.pixels.length;
+        const key = (y << 16) | (wrappedX & 0xffff);
+        if (occupancy.has(key)) {
+            return false;
+        }
+        return true;
     }
-    
-    update(dt, engine) {
-        this.lifetime += dt;
-        
-        if (this.grounded) return;
-        
-        // Apply gravity
-        this.vy += engine.gravity * (dt / 16.67);
-        
-        // Apply velocity
-        this.x += this.vx;
-        this.y += this.vy;
-        this.rotation += this.angularVelocity;
-        
-        // Collision with terrain
-        const collisionPoints = this.getCollisionPoints();
-        let hitSomething = false;
-        
-        for (const point of collisionPoints) {
-            const worldX = this.x + point.x;
-            const worldY = this.y + point.y;
-            
-            if (engine.terrain.isSolid(worldX, worldY)) {
-                hitSomething = true;
-                
-                // Bounce
-                this.vy *= -0.3;
-                this.vx *= 0.8;
-                this.angularVelocity *= 0.8;
-                
-                // Move out of terrain
-                this.y -= 2;
-                
-                // Check if we should settle
-                if (Math.abs(this.vy) < 0.5 && Math.abs(this.vx) < 0.5) {
-                    this.settle(engine);
+
+    tryMove(engine, occupancy, dx, dy) {
+        const targetX = this.x + dx;
+        const targetY = this.y + dy;
+        if (!this.canOccupy(engine, occupancy, targetX, targetY)) {
+            return false;
+        }
+        const wrappedX = wrapValue(targetX, engine.width) | 0;
+        this.x = wrappedX;
+        this.y = targetY;
+        this.restTime = 0;
+        return true;
+    }
+
+    settle(engine) {
+        const x = wrapValue(this.x, engine.width) | 0;
+        const y = this.y;
+        if (y >= 0 && y < engine.height) {
+            if (engine.terrain.getPixel(x, y) === engine.terrain.EMPTY) {
+                engine.terrain.setPixel(x, y, this.material);
+            } else {
+                // Find nearest empty cell above to avoid losing material
+                let targetY = y - 1;
+                while (targetY >= 0 && engine.terrain.getPixel(x, targetY) !== engine.terrain.EMPTY) {
+                    targetY--;
                 }
-                
+                if (targetY >= 0) {
+                    engine.terrain.setPixel(x, targetY, this.material);
+                    engine.terrain.markDirty(x, targetY);
+                }
+            }
+            engine.terrain.markDirty(x, y);
+        }
+        this.dead = true;
+    }
+
+    update(engine, occupancy, dt) {
+        if (this.dead) return;
+
+        // Remove current position from occupancy while moving
+        const previousKey = this.key();
+        occupancy.delete(previousKey);
+
+        const timeStep = dt || 16;
+        this.restTime += timeStep;
+
+        const preferLeft = this.drift < 0;
+        const preferRight = this.drift > 0;
+        const randomBias = Math.random() < 0.5;
+
+        const moveOrder = [];
+        // Always try straight down first
+        moveOrder.push({ dx: 0, dy: 1 });
+
+        const diagOptions = [
+            { dx: -1, dy: 1 },
+            { dx: 1, dy: 1 }
+        ];
+
+        if (preferLeft) {
+            moveOrder.push(diagOptions[0], diagOptions[1]);
+        } else if (preferRight) {
+            moveOrder.push(diagOptions[1], diagOptions[0]);
+        } else {
+            if (randomBias) {
+                moveOrder.push(diagOptions[0], diagOptions[1]);
+            } else {
+                moveOrder.push(diagOptions[1], diagOptions[0]);
+            }
+        }
+
+        let moved = false;
+        for (const move of moveOrder) {
+            if (this.tryMove(engine, occupancy, move.dx, move.dy)) {
+                moved = true;
                 break;
             }
         }
-        
-        // Friction
-        this.vx *= 0.99;
-        this.angularVelocity *= 0.98;
-        
-        // Check for splitting due to impact
-        if (hitSomething && Math.abs(this.vy) > 5 && this.pixels.length > 10) {
-            this.split(engine);
-        }
-        
-        // Bounds check
-        if (this.y > engine.height + 100) {
-            this.grounded = true;
-        }
-    }
-    
-    getCollisionPoints() {
-        // Sample points around the chunk for collision
-        const points = [];
-        const step = Math.max(1, Math.floor(this.pixels.length / 8));
-        
-        for (let i = 0; i < this.pixels.length; i += step) {
-            const px = this.pixels[i];
-            points.push({
-                x: px.x - this.x,
-                y: px.y - this.y
-            });
-        }
-        
-        return points;
-    }
-    
-    split(engine) {
-        if (this.pixels.length < 20) return;
-        
-        // Split chunk into smaller pieces
-        const midX = this.x + this.width / 2;
-        const midY = this.y + this.height / 2;
-        
-        const groups = [[], []];
-        
-        for (const px of this.pixels) {
-            const idx = px.x < midX ? 0 : 1;
-            groups[idx].push(px);
-        }
-        
-        for (const group of groups) {
-            if (group.length < 5) continue;
-            
-            let minX = Infinity, maxX = -Infinity;
-            let minY = Infinity, maxY = -Infinity;
-            
-            for (const px of group) {
-                minX = Math.min(minX, px.x);
-                maxX = Math.max(maxX, px.x);
-                minY = Math.min(minY, px.y);
-                maxY = Math.max(maxY, px.y);
+
+        if (!moved) {
+            // Allow slow sideways creep when blocked
+            if (this.drift !== 0 && this.canOccupy(engine, occupancy, this.x + this.drift, this.y)) {
+                const targetX = this.x + this.drift;
+                const wrappedX = wrapValue(targetX, engine.width) | 0;
+                this.x = wrappedX;
+                this.restTime += timeStep * 0.5;
             }
-            
-            const newChunk = engine.getChunkFromPool();
-            newChunk.init(group, minX, minY, maxX - minX + 1, maxY - minY + 1);
-            newChunk.vx = this.vx + (Math.random() - 0.5) * 2;
-            newChunk.vy = this.vy + (Math.random() - 0.5) * 2;
-            engine.chunks.push(newChunk);
-        }
-        
-        this.grounded = true;
-    }
-    
-    settle(engine) {
-        // Merge back into terrain
-        for (const px of this.pixels) {
-            engine.terrain.setPixel(Math.floor(this.x + px.x - this.x), Math.floor(this.y + px.y - this.y), px.material);
-        }
-        
-        this.grounded = true;
-    }
-    
-    takeDamage(damage, engine) {
-        this.health -= damage;
-        
-        if (this.health <= 0) {
-            // Break into particles
-            const particleCount = Math.min(20, this.pixels.length);
-            for (let i = 0; i < particleCount; i++) {
-                const px = this.pixels[Math.floor(Math.random() * this.pixels.length)];
-                const color = engine.terrain.colors[px.material];
-                if (color) {
-                    engine.spawnParticles(this.x + px.x - this.x, this.y + px.y - this.y, 1, color);
-                }
-            }
-            
-            this.grounded = true;
-        } else if (this.pixels.length > 10) {
-            this.split(engine);
-        }
-    }
-    
-    shouldRemove() {
-        return this.grounded || this.lifetime > this.maxLifetime;
-    }
-    
-    render(ctx, scale) {
-        if (this.grounded) return;
-        
-        ctx.save();
-        
-        // Translate to chunk position
-        ctx.translate((this.x + this.centerX) * scale, (this.y + this.centerY) * scale);
-        ctx.rotate(this.rotation);
-        
-        // Render pixels
-        for (const px of this.pixels) {
-            const color = this.getColorForMaterial(px.material);
-            if (color) {
-                ctx.fillStyle = color;
-                const rx = (px.x - this.x - this.centerX) * scale;
-                const ry = (px.y - this.y - this.centerY) * scale;
-                ctx.fillRect(rx, ry, scale, scale);
+
+            if (this.restTime >= this.settleDelay && this.isSupported(engine)) {
+                this.settle(engine);
             }
         }
-        
-        ctx.restore();
+
+        if (!this.dead && (this.y >= engine.height || this.y < 0)) {
+            this.dead = true;
+        }
+
+        if (!this.dead) {
+            const colorObj = engine.terrain.getMaterialColor(this.material, this.x, this.y);
+            if (colorObj) {
+                this.color = colorObj.hex;
+            }
+            occupancy.add(this.key());
+        }
     }
-    
-    getColorForMaterial(material) {
-        const colors = {
-            1: '#6b7280', // STONE
-            2: '#92633c', // DIRT
-            3: '#4ade80', // GRASS
-        };
-        return colors[material];
+
+    isSupported(engine) {
+        const belowY = this.y + 1;
+        if (belowY >= engine.height) return true;
+        const x = wrapValue(this.x, engine.width) | 0;
+        if (engine.terrain.isSolid(x, belowY)) return true;
+        // Check diagonals for support to avoid perpetual sliding
+        const leftSupport = engine.terrain.isSolid(wrapValue(x - 1, engine.width), belowY);
+        const rightSupport = engine.terrain.isSolid(wrapValue(x + 1, engine.width), belowY);
+        return leftSupport || rightSupport;
     }
-    
-    serialize() {
-        return {
-            x: this.x,
-            y: this.y,
-            vx: this.vx,
-            vy: this.vy,
-            rotation: this.rotation,
-            pixels: this.pixels.length
-        };
+
+    render(ctx, scale, offsetX = 0) {
+        if (this.dead) return;
+        ctx.fillStyle = this.color;
+        ctx.fillRect((this.x + offsetX) * scale, this.y * scale, scale, scale);
     }
 }
 
 /**
- * Particle system for effects
+ * Particle system for effects (unchanged)
  */
 class Particle {
     constructor() {
@@ -281,16 +213,20 @@ class Particle {
         this.dead = true;
     }
     
-    update(dt) {
+    update(dt, worldWidth = null) {
         this.vy += this.gravity;
         this.x += this.vx;
         this.y += this.vy;
-        
+
         this.vx *= 0.98;
         this.vy *= 0.98;
-        
+
+        if (worldWidth !== null && isFinite(worldWidth)) {
+            this.x = wrapValue(this.x, worldWidth);
+        }
+
         this.life -= this.decay;
-        
+
         if (this.life <= 0) {
             this.dead = true;
         }

@@ -6,10 +6,12 @@ A high-performance JavaScript game engine inspired by Cortex Command and Falling
 
 ### Core Engine
 - **Pixel-Perfect Destruction**: Terrain can be destroyed down to individual pixels
-- **Dynamic Physics**: Destroyed terrain breaks into physics chunks that can further fragment
+- **Dynamic Physics**: Destroyed terrain crumbles into falling sand particles that can settle or flow
+- **Substances System**: Grass, dirt, stone, and precious ores each have unique durability and behavior
+- **Massive Worlds**: Optimized pipeline supports 11k+ pixel wide maps without sacrificing framerate
 - **Procedural Generation**: Terrain generated using Perlin-like noise with caves and layers
 - **Deterministic Physics**: Fixed timestep ensures consistent behavior across all clients
-- **Object Pooling**: Optimized memory management for chunks and particles
+- **Object Pooling**: Optimized memory management for sand and effect particles
 
 ### Gameplay
 - **Mage Characters**: Small wizard characters with staffs
@@ -205,13 +207,13 @@ index.html         - Main game interface
 
 **Terrain**
 - Procedural generation using simplex noise
-- Flood-fill algorithm for chunk detection
+- Flood-fill algorithm to extract loose debris
 - Efficient rendering with dirty regions
 
-**PhysicsChunk**
-- Broken terrain pieces with physics
-- Collision detection and response
-- Recursive splitting on impact
+**SandParticle**
+- Falling sand simulation for debris
+- Simple cellular movement with drift
+- Welds back into terrain when settled
 
 **Player**
 - Movement and collision
@@ -227,7 +229,7 @@ index.html         - Main game interface
 
 ### Techniques Used
 
-1. **Object Pooling**: Reuse chunks and particles to reduce garbage collection
+1. **Object Pooling**: Reuse sand and particle effects to reduce garbage collection
 2. **Fixed Timestep**: Ensures consistent physics regardless of framerate
 3. **Dirty Regions**: Only re-render terrain that has changed
 4. **Spatial Partitioning**: Efficient collision detection (can be added)
@@ -236,7 +238,7 @@ index.html         - Main game interface
 ### Performance Tips
 
 - Target 60 FPS on modern hardware
-- Supports up to 1000 active physics chunks
+- Supports thousands of active falling sand particles
 - Network traffic optimized with delta compression
 - Canvas rendering optimized with batching
 
@@ -265,6 +267,12 @@ const heightVariation = noise.noise2D(x * 0.005, 0) * 80;
 const baseHeight = this.height * 0.4 + heightVariation;
 ```
 
+### Tweaking Substances
+
+Each material is defined in `terrain.js` within the `this.substances` map.  Update durability or `degradeTo` values to change how grass, dirt, stone, gold, silver, and iron react to explosions and impacts.
+
+Color variation for each substance lives in the `this.palettes` object.  Add or edit hex values there to fine-tune the natural dithering and texture of the map.
+
 ### Adjusting Physics
 
 Edit `engine.js` physics constants:
@@ -279,7 +287,7 @@ this.fixedTimeStep = 1000 / 60;  // Change simulation rate
 **Game runs slowly:**
 - Reduce `pixelSize` in engine.js for better performance
 - Lower canvas resolution
-- Reduce max number of chunks
+- Reduce max number of sand particles
 
 **Multiplayer won't connect:**
 - Ensure WebSocket server is running
@@ -289,8 +297,9 @@ this.fixedTimeStep = 1000 / 60;  // Change simulation rate
 
 **Terrain destruction lags:**
 - Reduce explosion radius
-- Lower max chunk size in terrain.js
-- Enable chunk pooling limits
+- Lower maximum sand particles spawned per explosion
+- Use smaller destruction radii for effects
+- Tune `maxSandParticles`, `maxSandUpdatesPerFrame`, and `maxSandSpawnPerDestroy` in `engine.js` to match target hardware
 
 ## 📝 License
 

@@ -10,7 +10,7 @@ This is a multiplayer pixel destruction game featuring procedural terrain genera
 - **index.html**: Main game interface with menu system and HUD
 - **engine.js**: Core game loop with fixed timestep physics (60 FPS)
 - **terrain.js**: Procedural terrain generation and pixel-perfect destruction
-- **physics.js**: Physics simulation for terrain chunks and particles
+- **physics.js**: Falling sand simulation for debris and particle effects
 - **player.js**: Player character movement and collision
 - **projectile.js**: Spell projectiles with different effects
 - **network.js**: Multiplayer networking with client-side prediction
@@ -29,7 +29,7 @@ This is a multiplayer pixel destruction game featuring procedural terrain genera
   - Lightning: Fast-moving bolt with chain damage
   - Earth: Heavy projectile with knockback
 - **Pixel-Perfect Destruction**: Terrain destroyed down to individual pixels
-- **Dynamic Physics**: Destroyed terrain breaks into physics chunks
+- **Dynamic Physics**: Destroyed terrain collapses into falling sand particles
 - **Multiplayer Synchronization**: Server authoritative with client prediction
 
 ## Technical Setup
@@ -67,7 +67,7 @@ This is a multiplayer pixel destruction game featuring procedural terrain genera
 ## Development Notes
 
 ### Performance Optimizations
-- Object pooling for chunks and particles
+- Object pooling for sand and particles
 - Fixed timestep ensures deterministic physics
 - Dirty region rendering for terrain updates
 - Efficient collision detection

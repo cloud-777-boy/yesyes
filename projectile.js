@@ -81,6 +81,10 @@ class Projectile {
         // Move
         this.x += this.vx;
         this.y += this.vy;
+
+        if (engine) {
+            this.x = wrapHorizontal(this.x, engine.width);
+        }
         
         // Spawn trail particles
         this.particleTimer += dt;
@@ -100,7 +104,7 @@ class Projectile {
             if (id === this.ownerId) continue;
             if (!player.alive) continue;
             
-            if (this.checkPlayerCollision(player)) {
+            if (this.checkPlayerCollision(player, engine)) {
                 player.takeDamage(this.damage);
                 
                 if (!this.piercing) {
@@ -110,40 +114,19 @@ class Projectile {
             }
         }
         
-        // Check collision with chunks
-        for (const chunk of engine.chunks) {
-            if (this.checkChunkCollision(chunk)) {
-                chunk.takeDamage(this.damage, engine);
-                
-                if (!this.piercing) {
-                    this.explode(engine);
-                    return;
-                }
-            }
-        }
-        
-        // Bounds check
-        if (this.x < 0 || this.x > engine.width || this.y < 0 || this.y > engine.height) {
+        // Bounds check (vertical only, horizontal wraps)
+        if (this.y < 0 || this.y > engine.height) {
             this.dead = true;
         }
     }
     
-    checkPlayerCollision(player) {
+    checkPlayerCollision(player, engine) {
         const px = player.x + player.width / 2;
         const py = player.y + player.height / 2;
-        const dist = Math.sqrt((this.x - px) ** 2 + (this.y - py) ** 2);
+        const dx = shortestWrappedDelta(this.x, px, engine.width);
+        const dy = this.y - py;
+        const dist = Math.sqrt(dx ** 2 + dy ** 2);
         return dist < this.radius + Math.max(player.width, player.height) / 2;
-    }
-    
-    checkChunkCollision(chunk) {
-        if (chunk.grounded) return false;
-        
-        const chunkCenterX = chunk.x + chunk.centerX;
-        const chunkCenterY = chunk.y + chunk.centerY;
-        const dist = Math.sqrt((this.x - chunkCenterX) ** 2 + (this.y - chunkCenterY) ** 2);
-        const chunkRadius = Math.sqrt(chunk.width ** 2 + chunk.height ** 2) / 2;
-        
-        return dist < this.radius + chunkRadius;
     }
     
     explode(engine) {
@@ -159,7 +142,9 @@ class Projectile {
             
             const px = player.x + player.width / 2;
             const py = player.y + player.height / 2;
-            const dist = Math.sqrt((this.x - px) ** 2 + (this.y - py) ** 2);
+            const dx = shortestWrappedDelta(this.x, px, engine.width);
+            const dy = this.y - py;
+            const dist = Math.sqrt(dx ** 2 + dy ** 2);
             
             if (dist < this.explosionRadius * 2) {
                 const damageFactor = 1 - (dist / (this.explosionRadius * 2));
@@ -196,7 +181,7 @@ class Projectile {
                     const dist = Math.random() * 20;
                     const px = this.x + Math.cos(angle) * dist;
                     const py = this.y + Math.sin(angle) * dist;
-                    engine.spawnParticles(px, py, 3, this.color);
+                    engine.spawnParticles(wrapHorizontal(px, engine.width), py, 3, this.color);
                 }
                 break;
                 

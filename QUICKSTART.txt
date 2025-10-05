@@ -71,8 +71,8 @@ DOCS:
 ═══════════════════════════════════════════════════════════════
 
 • Terrain destruction is permanent (until you refresh)
-• Destroyed terrain becomes physics chunks
-• Chunks can break into smaller pieces
+• Destroyed terrain collapses into falling sand particles
+• Sand cascades and settles into new terrain
 • Different spells have different effects:
   - Fireball: Large radius, explosive
   - Ice: Pierces through terrain

@@ -18,6 +18,7 @@ class Player {
         this.speed = 2;
         this.jumpPower = -6;
         this.grounded = false;
+        this.maxFallSpeed = 12;
         
         // Spell casting
         this.aimAngle = 0;
@@ -73,61 +74,37 @@ class Player {
         // Update cooldown
         if (this.cooldown > 0) {
             this.cooldown -= dt;
+            if (this.cooldown < 0) this.cooldown = 0;
         }
         
         // Horizontal movement
-        if (this.input.left) {
+        if (this.input.left && !this.input.right) {
             this.vx = -this.speed;
-        } else if (this.input.right) {
+        } else if (this.input.right && !this.input.left) {
             this.vx = this.speed;
         } else {
             this.vx *= 0.8;
+            if (Math.abs(this.vx) < 0.05) {
+                this.vx = 0;
+            }
         }
         
         // Apply gravity
         this.vy += engine.gravity;
-        
-        // Apply velocity
-        this.x += this.vx;
-        this.y += this.vy;
-        
-        // Collision detection
-        this.grounded = false;
-        
-        // Check ground
-        for (let ox = 0; ox < this.width; ox++) {
-            if (engine.terrain.isSolid(this.x + ox, this.y + this.height)) {
-                this.grounded = true;
-                this.y = Math.floor(this.y);
-                this.vy = 0;
-                break;
-            }
+        if (this.vy > this.maxFallSpeed) {
+            this.vy = this.maxFallSpeed;
         }
         
-        // Check ceiling
-        for (let ox = 0; ox < this.width; ox++) {
-            if (engine.terrain.isSolid(this.x + ox, this.y)) {
-                this.vy = 0;
-                this.y = Math.floor(this.y) + 1;
-                break;
-            }
-        }
+        // Resolve movement against terrain per axis to avoid tunneling
+        this.resolveHorizontal(engine);
+        const verticalHit = this.resolveVertical(engine);
         
-        // Check walls
-        let hitWall = false;
-        for (let oy = 0; oy < this.height; oy++) {
-            if (engine.terrain.isSolid(this.x, this.y + oy)) {
-                this.x = Math.floor(this.x) + 1;
-                this.vx = 0;
-                hitWall = true;
-                break;
-            }
-            if (engine.terrain.isSolid(this.x + this.width, this.y + oy)) {
-                this.x = Math.floor(this.x);
-                this.vx = 0;
-                hitWall = true;
-                break;
-            }
+        if (verticalHit === 'down') {
+            this.grounded = true;
+        } else if (verticalHit === 'up') {
+            this.grounded = false;
+        } else {
+            this.grounded = this.vy >= 0 && this.isColliding(engine, this.x, this.y + 0.1);
         }
         
         // Jumping
@@ -139,7 +116,9 @@ class Player {
         // Aim staff
         const centerX = this.x + this.width / 2;
         const centerY = this.y + this.height / 2;
-        this.aimAngle = Math.atan2(this.input.mouseY - centerY, this.input.mouseX - centerX);
+        const dx = shortestWrappedDelta(this.input.mouseX, centerX, engine.width);
+        const dy = this.input.mouseY - centerY;
+        this.aimAngle = Math.atan2(dy, dx);
         
         // Shoot spell
         if (this.input.shoot && this.cooldown <= 0) {
@@ -147,11 +126,11 @@ class Player {
             this.cooldown = this.cooldownTime;
         }
         
-        // Bounds
-        this.x = Math.max(0, Math.min(this.x, engine.width - this.width));
+        // Bounds (horizontal wraps, vertical clamps)
+        this.x = wrapHorizontal(this.x, engine.width);
         this.y = Math.max(0, Math.min(this.y, engine.height - this.height));
     }
-    
+
     castSpell(engine) {
         const centerX = this.x + this.width / 2;
         const centerY = this.y + this.height / 2;
@@ -164,11 +143,12 @@ class Player {
         const vy = Math.sin(this.aimAngle) * speed;
         
         const spell = this.spells[this.selectedSpell];
-        engine.spawnProjectile(staffEndX, staffEndY, vx, vy, spell, this.id);
+        const spawnX = wrapHorizontal(staffEndX, engine.width);
+        engine.spawnProjectile(spawnX, staffEndY, vx, vy, spell, this.id);
         
         // Particle effect
         const color = this.getSpellColor(spell);
-        engine.spawnParticles(staffEndX, staffEndY, 5, color);
+        engine.spawnParticles(spawnX, staffEndY, 5, color);
     }
     
     getSpellColor(spell) {
@@ -188,7 +168,96 @@ class Player {
             this.alive = false;
         }
     }
-    
+
+    resolveHorizontal(engine) {
+        if (!engine || !engine.terrain) return false;
+
+        const velocity = this.vx;
+        if (velocity === 0) return false;
+
+        const steps = Math.max(1, Math.ceil(Math.abs(velocity)));
+        const step = velocity / steps;
+        let collided = false;
+
+        for (let i = 0; i < steps; i++) {
+            this.x += step;
+            if (this.isColliding(engine, this.x, this.y)) {
+                this.x -= step;
+                if (step > 0) {
+                    this.x = Math.floor(this.x);
+                } else {
+                    this.x = Math.ceil(this.x);
+                }
+                collided = true;
+                this.vx = 0;
+                break;
+            }
+        }
+
+        return collided;
+    }
+
+    resolveVertical(engine) {
+        if (!engine || !engine.terrain) return null;
+
+        const velocity = this.vy;
+        if (velocity === 0) return null;
+
+        const steps = Math.max(1, Math.ceil(Math.abs(velocity)));
+        const step = velocity / steps;
+        let collisionDirection = null;
+
+        for (let i = 0; i < steps; i++) {
+            this.y += step;
+            if (this.isColliding(engine, this.x, this.y)) {
+                this.y -= step;
+                if (step > 0) {
+                    this.y = Math.floor(this.y);
+                    collisionDirection = 'down';
+                } else {
+                    this.y = Math.ceil(this.y);
+                    collisionDirection = 'up';
+                }
+                this.vy = 0;
+                break;
+            }
+        }
+
+        return collisionDirection;
+    }
+
+    isColliding(engine, posX, posY) {
+        if (!engine || !engine.terrain) return false;
+
+        const left = Math.floor(posX);
+        const right = Math.floor(posX + this.width - 0.001);
+        const top = Math.floor(posY);
+        const bottom = Math.floor(posY + this.height - 0.001);
+
+        const terrain = engine.terrain;
+        const width = terrain.width;
+        const height = terrain.height;
+
+        if (top < 0 || bottom >= height) {
+            return true;
+        }
+
+        const pixels = terrain.pixels;
+        const empty = terrain.EMPTY;
+
+        for (let y = top; y <= bottom; y++) {
+            for (let x = left; x <= right; x++) {
+                const wrappedX = Math.floor(wrapHorizontal(x, width));
+                const index = y * width + wrappedX;
+                if (pixels[index] !== empty) {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+
     render(ctx, scale) {
         if (!this.alive) return;
         
