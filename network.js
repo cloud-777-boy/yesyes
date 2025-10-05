@@ -182,9 +182,19 @@ class NetworkManager {
     sendInput(input) {
         if (!this.connected || !this.playerId) return;
         
-        // Add sequence number
+        const localPlayer = this.engine.players.get(this.playerId);
+        
+        // Add sequence number and position data
         input.sequence = this.inputSequence++;
         input.tick = this.currentTick;
+        
+        // Include current position for server reconciliation
+        if (localPlayer) {
+            input.x = localPlayer.x;
+            input.y = localPlayer.y;
+            input.vx = localPlayer.vx;
+            input.vy = localPlayer.vy;
+        }
         
         // Store for reconciliation
         this.pendingInputs.push({...input});
@@ -196,7 +206,6 @@ class NetworkManager {
         });
         
         // Apply locally (client-side prediction)
-        const localPlayer = this.engine.players.get(this.playerId);
         if (localPlayer) {
             this.applyInput(localPlayer, input);
         }

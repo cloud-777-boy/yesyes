@@ -129,6 +129,8 @@ class Player {
         // Bounds (horizontal wraps, vertical clamps)
         this.x = wrapHorizontal(this.x, engine.width);
         this.y = Math.max(0, Math.min(this.y, engine.height - this.height));
+
+        this.riseOutOfGranular(engine);
     }
 
     castSpell(engine) {
@@ -256,6 +258,51 @@ class Player {
         }
         
         return false;
+    }
+
+    isInsideGranular(engine) {
+        if (!engine || !engine.terrain) return false;
+        const terrain = engine.terrain;
+
+        const innerLeft = Math.floor(this.x + 0.9);
+        const innerRight = Math.floor(this.x + this.width - 0.9);
+        const innerTop = Math.floor(this.y + this.height * 0.3);
+        const innerBottom = Math.floor(this.y + this.height - 1.2);
+
+        if (innerBottom < innerTop || innerRight < innerLeft) {
+            return false;
+        }
+
+        for (let y = innerTop; y <= innerBottom; y++) {
+            for (let x = innerLeft; x <= innerRight; x++) {
+                if (terrain.isGranular(x, y)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    riseOutOfGranular(engine) {
+        if (!engine || !engine.terrain) return;
+        if (!this.isInsideGranular(engine)) return;
+        if (this.grounded && Math.abs(this.vy) < 0.1) return;
+
+        const maxLift = this.height + 2;
+        let lifted = 0;
+        while (lifted <= maxLift && this.isInsideGranular(engine)) {
+            this.y -= 1;
+            lifted++;
+            if (this.y <= 0) {
+                this.y = 0;
+                break;
+            }
+        }
+
+        if (lifted > 0) {
+            this.vy = Math.min(this.vy, 0);
+            this.grounded = this.isColliding(engine, this.x, this.y + 0.1);
+        }
     }
 
     render(ctx, scale) {

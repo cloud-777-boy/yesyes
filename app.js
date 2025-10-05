@@ -182,16 +182,24 @@ class GameServer {
         const player = this.players.get(playerId);
         if (!player || !player.alive) return;
         
-        if (input.left) player.x -= 2;
-        if (input.right) player.x += 2;
-        if (input.jump && player.grounded) player.vy = -6;
-        
-        player.x = Math.max(0, Math.min(player.x, 1600));
-        
+        // Update aim angle
         player.aimAngle = Math.atan2(
             input.mouseY - (player.y + 6),
             input.mouseX - (player.x + 3)
         );
+        
+        // Update from client input with basic validation
+        // Note: Client-authoritative for physics since server lacks terrain data
+        // This fixes the hovering bug caused by hardcoded ground collision
+        if (input.x !== undefined && input.y !== undefined) {
+            // Basic bounds checking only
+            player.x = Math.max(0, Math.min(input.x, 1600));
+            player.y = Math.max(0, Math.min(input.y, 900));
+            
+            // Update velocities
+            if (input.vx !== undefined) player.vx = input.vx;
+            if (input.vy !== undefined) player.vy = input.vy;
+        }
         
         if (input.sequence) {
             player.lastInputSequence = input.sequence;
@@ -258,18 +266,9 @@ class GameServer {
         for (const [id, player] of this.players.entries()) {
             if (!player.alive) continue;
             
-            player.vy += 0.3;
-            player.y += player.vy;
-            
-            if (player.y > 300) {
-                player.y = 300;
-                player.vy = 0;
-                player.grounded = true;
-            } else {
-                player.grounded = false;
-            }
-            
-            player.vx *= 0.8;
+            // Basic bounds checking only - client handles terrain collision
+            player.x = Math.max(0, Math.min(player.x, 1600));
+            player.y = Math.max(0, Math.min(player.y, 900));
         }
     }
     

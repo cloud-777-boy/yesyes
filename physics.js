@@ -28,6 +28,10 @@ class SandParticle {
         this.restTime = 0;
         this.settleDelay = 180; // ms before welding back into terrain
         this.dead = false;
+        this.chunkX = 0;
+        this.chunkY = 0;
+        this.chunkKey = null;
+        this.chunkIndex = -1;
     }
 
     reset() {
@@ -39,10 +43,14 @@ class SandParticle {
         this.restTime = 0;
         this.settleDelay = 180;
         this.dead = true;
+        this.chunkX = 0;
+        this.chunkY = 0;
+        this.chunkKey = null;
+        this.chunkIndex = -1;
     }
 
     key() {
-        return (this.y << 16) | (this.x & 0xffff);
+        return ((this.y << 16) | (this.x & 0xffff)) >>> 0;
     }
 
     canOccupy(engine, occupancy, x, y) {
@@ -51,7 +59,7 @@ class SandParticle {
         if (engine.terrain.getPixel(wrappedX, y) !== engine.terrain.EMPTY) {
             return false;
         }
-        const key = (y << 16) | (wrappedX & 0xffff);
+        const key = ((y << 16) | (wrappedX & 0xffff)) >>> 0;
         if (occupancy.has(key)) {
             return false;
         }
@@ -174,10 +182,10 @@ class SandParticle {
         return leftSupport || rightSupport;
     }
 
-    render(ctx, scale, offsetX = 0) {
+    render(ctx, scale) {
         if (this.dead) return;
         ctx.fillStyle = this.color;
-        ctx.fillRect((this.x + offsetX) * scale, this.y * scale, scale, scale);
+        ctx.fillRect(this.x * scale, this.y * scale, scale, scale);
     }
 }
 

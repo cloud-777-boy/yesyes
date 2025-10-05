@@ -70,14 +70,14 @@ class Terrain {
         };
 
         this.substances = {
-            [this.EMPTY]: { name: 'empty', durability: 0, density: 0, degradeTo: null },
-            [this.GRASS]: { name: 'grass', durability: 1, density: 1, degradeTo: this.EMPTY },
-            [this.DIRT]: { name: 'dirt', durability: 2, density: 2, degradeTo: this.GRASS },
-            [this.STONE]: { name: 'stone', durability: 4, density: 3, degradeTo: this.DIRT },
-            [this.GOLD]: { name: 'gold', durability: 5, density: 4, degradeTo: this.STONE },
-            [this.SILVER]: { name: 'silver', durability: 6, density: 4, degradeTo: this.STONE },
-            [this.IRON]: { name: 'iron', durability: 7, density: 5, degradeTo: this.STONE },
-            [this.BEDROCK]: { name: 'bedrock', durability: Infinity, density: 10, degradeTo: null }
+            [this.EMPTY]: { name: 'empty', durability: 0, density: 0, degradeTo: null, raiseOnContact: false },
+            [this.GRASS]: { name: 'grass', durability: 1, density: 1, degradeTo: this.EMPTY, raiseOnContact: true },
+            [this.DIRT]: { name: 'dirt', durability: 2, density: 2, degradeTo: this.GRASS, raiseOnContact: true },
+            [this.STONE]: { name: 'stone', durability: 4, density: 3, degradeTo: this.DIRT, raiseOnContact: true },
+            [this.GOLD]: { name: 'gold', durability: 5, density: 4, degradeTo: this.STONE, raiseOnContact: true },
+            [this.SILVER]: { name: 'silver', durability: 6, density: 4, degradeTo: this.STONE, raiseOnContact: true },
+            [this.IRON]: { name: 'iron', durability: 7, density: 5, degradeTo: this.STONE, raiseOnContact: true },
+            [this.BEDROCK]: { name: 'bedrock', durability: Infinity, density: 10, degradeTo: null, raiseOnContact: false }
         };
         
         // Render cache
@@ -186,6 +186,15 @@ class Terrain {
     isSolid(x, y) {
         const pixel = this.getPixel(Math.floor(x), Math.floor(y));
         return pixel !== this.EMPTY;
+    }
+
+    isGranular(x, y) {
+        const material = this.getPixel(x, y);
+        if (material === this.EMPTY || material === this.BEDROCK) {
+            return false;
+        }
+        const props = this.substances[material];
+        return props ? !!props.raiseOnContact : false;
     }
     
     destroy(centerX, centerY, radius) {

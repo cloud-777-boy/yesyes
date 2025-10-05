@@ -9,6 +9,7 @@ A high-performance JavaScript game engine inspired by Cortex Command and Falling
 - **Dynamic Physics**: Destroyed terrain crumbles into falling sand particles that can settle or flow
 - **Substances System**: Grass, dirt, stone, and precious ores each have unique durability and behavior
 - **Massive Worlds**: Optimized pipeline supports 11k+ pixel wide maps without sacrificing framerate
+- **Chunked Simulation**: Physics only runs in buffered active chunks around players for huge performance gains
 - **Procedural Generation**: Terrain generated using Perlin-like noise with caves and layers
 - **Deterministic Physics**: Fixed timestep ensures consistent behavior across all clients
 - **Object Pooling**: Optimized memory management for sand and effect particles
@@ -241,6 +242,7 @@ index.html         - Main game interface
 - Supports thousands of active falling sand particles
 - Network traffic optimized with delta compression
 - Canvas rendering optimized with batching
+- Adjust `sandViewRadiusMultiplier` in `engine.js` to tune how many chunks stay active per player
 
 ## 🎯 Customization
 
