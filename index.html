@@ -229,15 +229,15 @@
     </div>
     
     <!-- Game Scripts -->
-    <script src="deterministic.js?v=1759702889"></script>
-    <script src="terrain.js?v=1759702889"></script>
-    <script src="physics.js?v=1759702889"></script>
-    <script src="player.js?v=1759702889"></script>
-    <script src="projectile.js?v=1759702889"></script>
-    <script src="eigensand.js?v=1759702889"></script>
-    <script src="engine.js?v=1759702889"></script>
-    <script src="network.js?v=1759702889"></script>
-    <script src="input.js?v=1759702889"></script>
+    <script src="deterministic.js?v=1759703071"></script>
+    <script src="terrain.js?v=1759703071"></script>
+    <script src="physics.js?v=1759703071"></script>
+    <script src="player.js?v=1759703071"></script>
+    <script src="projectile.js?v=1759703071"></script>
+    <script src="eigensand.js?v=1759703071"></script>
+    <script src="engine.js?v=1759703071"></script>
+    <script src="network.js?v=1759703071"></script>
+    <script src="input.js?v=1759703071"></script>
     
     <script>
         let game = null;
@@ -554,10 +554,9 @@
             } catch (error) {
                 console.error('Connection error:', error);
                 updateConnectionStatus(false, 'Connection error');
-                alert('Connection error. Starting in offline mode instead.');
-                if (!game || !game.running) {
-                    startSinglePlayer();
-                }
+                alert('Connection error. Please check the server URL and try again.');
+                document.getElementById('menu').classList.remove('hidden');
+                document.getElementById('multiplayerMenu').classList.remove('hidden');
             }
         }
         
