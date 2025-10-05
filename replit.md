@@ -78,14 +78,35 @@ This is a multiplayer pixel destruction game featuring procedural terrain genera
 - Server reconciliation to correct divergence
 - Input buffering and replay for network compensation
 - Tick-based synchronization (60 Hz physics, 20 Hz state updates)
+- **Terrain Synchronization**: First player's terrain becomes source of truth for all players
+
+### Terrain Synchronization System
+To ensure 100% deterministic shared terrain across all players:
+- **First player** generates terrain procedurally and uploads snapshot to server
+- **Server** stores the terrain snapshot and broadcasts to all joining players
+- **Subsequent players** receive and load the exact same terrain data
+- **Base64 encoding** efficiently transmits terrain pixel data
+- **Automatic sync** on connection ensures identical game world for all players
+- **No terrain drift** between clients - all players see the same landscape
 
 ## Recent Changes
 
-**2025-10-05**: Fixed multiplayer deployment issue
+**2025-10-05**: Terrain synchronization system
+- Implemented terrain snapshot serialization/deserialization with base64 encoding
+- First player to connect uploads their procedurally generated terrain to server
+- Server stores terrain snapshot and broadcasts to all subsequent players
+- Added `getTerrainSnapshot()` and `loadTerrainSnapshot()` to engine
+- Added `serializeSnapshot()` and `applySnapshot()` to terrain manager
+- Ensures 100% identical terrain across all multiplayer clients
+- Eliminates terrain height mismatches and terrain drift issues
+
+**2025-10-05**: Fixed WebSocket URL and deployment issues
 - Combined HTTP and WebSocket on single port (5000)
 - WebSocket server now attached to HTTP server instead of separate port
 - Fixes deployment issue where port 8080 was blocked by firewall
-- Updated client WebSocket URL detection to use same port as HTTP
+- Added auto-fix for stored URLs with incorrect port numbers
+- WebSocket URL now correctly omits port for Replit domains (*.replit.app, *.replit.dev, *.repl.co)
+- Enhanced connection logging for better debugging
 
 **2025-10-05**: Liquid physics improvements
 - Liquids (water/lava) now remain dynamic forever using falling sand physics
@@ -102,7 +123,6 @@ This is a multiplayer pixel destruction game featuring procedural terrain genera
 - Changed to client-authoritative physics for terrain collision  
 - Server now accepts client positions with basic bounds validation
 - This fixes the visual hovering bug where players appeared to float over terrain
-- Note: Proper anti-cheat would require syncing terrain data to server (future enhancement)
 
 **2025-10-04**: Initial Replit setup
 - Created combined HTTP/WebSocket server (app.js)

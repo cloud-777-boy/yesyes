@@ -149,6 +149,29 @@ class GameEngine {
         }
         this.spawnPendingFluids(true);
     }
+
+    getTerrainSnapshot() {
+        if (!this.terrain || typeof this.terrain.serializeSnapshot !== 'function') return null;
+        const snapshot = this.terrain.serializeSnapshot();
+        if (snapshot) {
+            snapshot.seed = this.seed;
+        }
+        return snapshot;
+    }
+
+    loadTerrainSnapshot(snapshot) {
+        if (!snapshot || !this.terrain || typeof this.terrain.applySnapshot !== 'function') return;
+        if (!this.terrain.applySnapshot(snapshot)) return;
+        this.clearSandChunks();
+        this.sandParticleCount = 0;
+        this.pendingFluidChunks.clear();
+        this.pendingFluidCount = 0;
+        this.liquidBlobCache.clear();
+        this.nextLiquidBlobId = 1;
+        const { width, height } = this.getViewDimensions();
+        this.updateActiveChunks(width, height);
+        this.spawnPendingFluids(true);
+    }
     
     addPlayer(id, x, y, selectedSpell = null) {
         const playerRng = this.random && typeof this.random.fork === 'function'

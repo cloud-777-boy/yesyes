@@ -25,6 +25,7 @@ class GameServer {
         this.terrainModifications = [];
         this.maxTerrainModHistory = 1024;
         this.maxTerrainModBroadcast = 64;
+        this.terrainSnapshot = null;
         this.playerCounter = 0;
         this.seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
         this.random = DeterministicRandom ? new DeterministicRandom(this.seed) : null;
@@ -71,6 +72,7 @@ class GameServer {
             this.players.set(playerId, player);
             
             // Send welcome message
+            const needsSnapshot = !this.terrainSnapshot;
             const welcomePayload = {
                 type: 'welcome',
                 playerId: playerId,
@@ -79,8 +81,12 @@ class GameServer {
                 spawnY: player.y,
                 selectedSpell: player.selectedSpell,
                 seed: this.seed,
-                terrainMods: this.terrainModifications.slice()
+                needsTerrainSnapshot: needsSnapshot,
+                terrainMods: this.terrainModifications.slice(-this.maxTerrainModBroadcast)
             };
+            if (this.terrainSnapshot) {
+                welcomePayload.terrainSnapshot = this.terrainSnapshot;
+            }
             this.sendToPlayer(playerId, welcomePayload);
             
             // Notify other players
@@ -153,6 +159,10 @@ class GameServer {
             case 'terrain_destroy':
                 this.handleTerrainDestruction(playerId, msg);
                 break;
+
+            case 'terrain_snapshot':
+                this.handleTerrainSnapshot(playerId, msg.snapshot);
+                break;
                 
             case 'ping':
                 this.sendToPlayer(playerId, {
@@ -213,7 +223,6 @@ class GameServer {
     }
     
     handleTerrainDestruction(playerId, msg) {
-        // Record terrain modification
         const mod = {
             tick: this.tick,
             x: msg.x,
@@ -226,7 +235,6 @@ class GameServer {
             this.terrainModifications.splice(0, this.terrainModifications.length - this.maxTerrainModHistory);
         }
 
-        // Broadcast to all clients
         this.broadcast({
             type: 'terrain_update',
             x: msg.x,
@@ -235,6 +243,16 @@ class GameServer {
             explosive: msg.explosive,
             tick: this.tick
         });
+    }
+
+    handleTerrainSnapshot(playerId, snapshot) {
+        if (!snapshot || this.terrainSnapshot) {
+            return;
+        }
+        this.terrainSnapshot = snapshot;
+        this.terrainModifications = [];
+        console.log(`[${new Date().toISOString()}] Terrain snapshot received from ${playerId}. Broadcasting to peers.`);
+        this.broadcast({ type: 'terrain_snapshot', snapshot }, playerId);
     }
     
     startGameLoop() {

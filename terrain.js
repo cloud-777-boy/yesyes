@@ -9,6 +9,46 @@ function wrapHorizontal(value, width) {
     return wrapped;
 }
 
+function encodeBytesToBase64(bytes) {
+    if (!bytes) return '';
+    if (typeof Buffer !== 'undefined') {
+        return Buffer.from(bytes).toString('base64');
+    }
+    let binary = '';
+    const len = bytes.length;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    if (typeof btoa === 'function') {
+        return btoa(binary);
+    }
+    throw new Error('Base64 encoding not supported in this environment');
+}
+
+function decodeBase64ToBytes(base64, expectedLength = null) {
+    if (!base64) return new Uint8Array(0);
+    let binary;
+    if (typeof Buffer !== 'undefined') {
+        const buffer = Buffer.from(base64, 'base64');
+        return new Uint8Array(buffer);
+    }
+    if (typeof atob === 'function') {
+        binary = atob(base64);
+    } else {
+        throw new Error('Base64 decoding not supported in this environment');
+    }
+    const len = binary.length;
+    if (expectedLength !== null && expectedLength !== len) {
+        // Length mismatch; still decode but log warning
+        console.warn('Base64 decoded length mismatch:', expectedLength, len);
+    }
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+}
+
 function shortestWrappedDelta(a, b, width) {
     if (width <= 0) return a - b;
     let delta = a - b;
@@ -298,6 +338,55 @@ class Terrain {
         if (y < 0 || y >= this.height) return this.BEDROCK;
         const wrappedX = Math.floor(wrapHorizontal(x, this.width));
         return this.pixels[y * this.width + wrappedX];
+    }
+
+    serializeSnapshot() {
+        return {
+            width: this.width,
+            height: this.height,
+            pixels: encodeBytesToBase64(this.pixels)
+        };
+    }
+
+    applySnapshot(snapshot) {
+        if (!snapshot || typeof snapshot !== 'object') return false;
+        if (snapshot.width !== this.width || snapshot.height !== this.height) return false;
+        const decoded = decodeBase64ToBytes(snapshot.pixels, this.width * this.height);
+        if (decoded.length !== this.width * this.height) return false;
+        this.pixels.set(decoded);
+        this.initialFluids = [];
+        this.pixelColors32 = null;
+        this.imageData = null;
+        this.offscreenCanvas = null;
+        this.offscreenCtx = null;
+        this.generating = false;
+        this.colorCache.clear();
+        this.modifiedChunks.clear();
+        this.dirty = true;
+        this.fullRedrawNeeded = true;
+        this.dirtyBounds = {
+            minX: 0,
+            minY: 0,
+            maxX: this.width - 1,
+            maxY: this.height - 1
+        };
+        if (this.surfaceCache) {
+            this.surfaceCache.fill(this.height);
+        }
+        this.rebuildSurfaceCache();
+        this.markDirtyRegion(0, 0, this.width - 1, this.height - 1);
+        return true;
+    }
+
+    rebuildSurfaceCache() {
+        if (!this.surfaceCache || !this.surfaceCache.length) return;
+        for (let x = 0; x < this.width; x++) {
+            let y = 0;
+            while (y < this.height && this.pixels[y * this.width + x] === this.EMPTY) {
+                y++;
+            }
+            this.surfaceCache[x] = y < this.height ? y : this.height;
+        }
     }
     
     isSolid(x, y) {
