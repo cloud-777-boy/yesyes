@@ -75,7 +75,7 @@ class NetworkManager {
                 this.confirmedTick = msg.tick;
                 
                 // Add local player
-                this.engine.addPlayer(this.playerId, msg.spawnX, msg.spawnY);
+                this.engine.addPlayer(this.playerId, msg.spawnX, msg.spawnY, msg.selectedSpell);
                 break;
                 
             case 'state':
@@ -84,7 +84,7 @@ class NetworkManager {
                 
             case 'player_joined':
                 if (msg.playerId !== this.playerId) {
-                    this.engine.addPlayer(msg.playerId, msg.x, msg.y);
+                    this.engine.addPlayer(msg.playerId, msg.x, msg.y, msg.selectedSpell);
                 }
                 break;
                 
@@ -133,7 +133,11 @@ class NetworkManager {
                 player.health = pData.health;
                 player.alive = pData.alive;
                 player.aimAngle = pData.aimAngle;
-                player.selectedSpell = pData.selectedSpell;
+                if (typeof player.normalizeSpellIndex === 'function') {
+                    player.selectedSpell = player.normalizeSpellIndex(pData.selectedSpell);
+                } else {
+                    player.selectedSpell = pData.selectedSpell;
+                }
             }
         }
         
@@ -156,7 +160,13 @@ class NetworkManager {
     reconcileState(serverState) {
         const localPlayer = this.engine.players.get(this.playerId);
         if (!localPlayer) return;
-        
+
+        if (typeof localPlayer.normalizeSpellIndex === 'function') {
+            localPlayer.selectedSpell = localPlayer.normalizeSpellIndex(serverState.selectedSpell);
+        } else {
+            localPlayer.selectedSpell = serverState.selectedSpell;
+        }
+
         // Check if local prediction diverged from server
         const dx = localPlayer.x - serverState.x;
         const dy = localPlayer.y - serverState.y;

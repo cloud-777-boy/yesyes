@@ -90,7 +90,7 @@ class GameServer {
                 maxHealth: 100,
                 alive: true,
                 aimAngle: 0,
-                selectedSpell: 0,
+                selectedSpell: this.getRandomSpellIndex(),
                 lastInputSequence: 0,
                 joinTime: Date.now()
             };
@@ -102,14 +102,16 @@ class GameServer {
                 playerId: playerId,
                 tick: this.tick,
                 spawnX: player.x,
-                spawnY: player.y
+                spawnY: player.y,
+                selectedSpell: player.selectedSpell
             });
             
             this.broadcast({
                 type: 'player_joined',
                 playerId: playerId,
                 x: player.x,
-                y: player.y
+                y: player.y,
+                selectedSpell: player.selectedSpell
             }, playerId);
             
             for (const [id, p] of this.players.entries()) {
@@ -118,7 +120,8 @@ class GameServer {
                         type: 'player_joined',
                         playerId: id,
                         x: p.x,
-                        y: p.y
+                        y: p.y,
+                        selectedSpell: p.selectedSpell
                     });
                 }
             }
@@ -315,6 +318,10 @@ class GameServer {
     
     generatePlayerId() {
         return 'player-' + Math.random().toString(36).substr(2, 9);
+    }
+
+    getRandomSpellIndex() {
+        return Math.floor(Math.random() * 4);
     }
     
     logStats() {

@@ -25,7 +25,9 @@ class GameEngine {
         this.activeSandLists = [];
         this.activeSandChunkKeys = [];
         this.activeSandLookup = [];
-        this.maxSandParticles = 6000;
+        this.baseSandCapacity = 6000;
+        this.maxSandParticles = this.baseSandCapacity;
+        this.sandPoolLimit = 5000;
         this.maxSandUpdatesPerFrame = 900;
         this.maxSandSpawnPerDestroy = 500;
         this.sandUpdateCursor = 0;
@@ -33,7 +35,7 @@ class GameEngine {
         this.playerList = [];
         this.projectiles = [];
         this.particles = [];
-        
+
         // Physics settings (deterministic)
         this.gravity = 0.3;
         this.fixedTimeStep = 1000 / 60; // 60 FPS fixed timestep
@@ -48,10 +50,17 @@ class GameEngine {
 
         // Performance
         this.sandViewRadiusMultiplier = 2.5;
-        this.defaultViewWidth = 800;
-        this.defaultViewHeight = 600;
+        const baseViewWidth = canvas ? Math.max(1, Math.floor(canvas.width / this.pixelSize)) : 800;
+        const baseViewHeight = canvas ? Math.max(1, Math.floor(canvas.height / this.pixelSize)) : 600;
+        this.defaultViewWidth = baseViewWidth;
+        this.defaultViewHeight = baseViewHeight;
         this.particlePool = [];
-        
+        this.pendingFluidChunks = new Map();
+        this.pendingFluidCount = 0;
+        this.maxFluidSpawnPerTick = isServer ? 120 : 360;
+        this.maxFluidSpawnPerChunk = isServer ? 36 : 120;
+        this.lastFluidSpawnTick = -1;
+
         // Camera
         this.cameraX = 0;
         this.cameraY = 0;
@@ -64,8 +73,6 @@ class GameEngine {
         // Initialize terrain
         this.terrain = new Terrain(this.width, this.height);
         this.terrain.generate();
-        const fluids = this.terrain.consumeInitialFluids();
-        this.spawnInitialFluids(fluids);
         this.sandChunks.clear();
         this.sandParticleCount = 0;
         this.sandUpdateCursor = 0;
@@ -75,14 +82,25 @@ class GameEngine {
         this.activeSandLists.length = 0;
         this.activeSandChunkKeys.length = 0;
         this.activeSandLookup.length = 0;
+        this.sandOccupancy.clear();
+        this.pendingFluidChunks.clear();
+        this.pendingFluidCount = 0;
+        this.lastFluidSpawnTick = -1;
+
+        const fluids = this.terrain.consumeInitialFluids();
+        this.spawnInitialFluids(fluids);
 
         // Setup camera
         this.cameraX = this.width / 2;
         this.cameraY = this.height / 2;
+
+        const { width, height } = this.getViewDimensions();
+        this.updateActiveChunks(width, height);
+        this.spawnPendingFluids(true);
     }
     
-    addPlayer(id, x, y) {
-        const player = new Player(id, x, y);
+    addPlayer(id, x, y, selectedSpell = null) {
+        const player = new Player(id, x, y, selectedSpell);
         this.players.set(id, player);
         this.playerList.push(player);
         return player;
@@ -163,6 +181,17 @@ class GameEngine {
         };
     }
 
+    onCanvasResized() {
+        if (!this.canvas) return;
+        this.defaultViewWidth = Math.max(1, Math.floor(this.canvas.width / this.pixelSize));
+        this.defaultViewHeight = Math.max(1, Math.floor(this.canvas.height / this.pixelSize));
+
+        if (this.terrain) {
+            const { width, height } = this.getViewDimensions();
+            this.updateActiveChunks(width, height);
+        }
+    }
+
     updateActiveChunks(viewWidth, viewHeight) {
         const chunkSize = this.chunkSize;
         const totalChunksX = Math.ceil(this.width / chunkSize);
@@ -225,6 +254,7 @@ class GameEngine {
     }
 
     update(dt) {
+        this.spawnPendingFluids(false);
         const { width: viewWidth, height: viewHeight } = this.getViewDimensions();
         this.updateActiveChunks(viewWidth, viewHeight);
 
@@ -312,19 +342,135 @@ class GameEngine {
     }
 
     spawnInitialFluids(fluids) {
-        if (!Array.isArray(fluids)) return;
+        if (!Array.isArray(fluids) || fluids.length === 0) return;
+        this.queuePendingFluids(fluids);
+    }
+
+    queuePendingFluids(fluids) {
+        if (!Array.isArray(fluids) || fluids.length === 0) return;
+
+        const chunkSize = this.chunkSize;
+        const totalChunksX = Math.ceil(this.width / chunkSize);
+        const maxChunkY = Math.ceil(this.height / chunkSize) - 1;
+        const pendingAfterQueue = this.pendingFluidCount + fluids.length;
+        this.ensureSandCapacity(pendingAfterQueue);
+
         for (let i = 0; i < fluids.length; i++) {
-            if (this.sandParticleCount >= this.maxSandParticles) break;
-            const { x, y, material } = fluids[i];
-            const sand = this.getSandParticleFromPool();
-            const colorObj = this.terrain.getMaterialColor(material, x, y);
-            const color = colorObj ? colorObj.hex : '#ffffff';
-            sand.init(x, y, material, color, 0);
-            const chunkX = Math.floor(x / this.chunkSize);
-            const chunkY = Math.floor(y / this.chunkSize);
-            this.addSandToChunk(sand, chunkX, chunkY);
-            this.sandParticleCount++;
+            const entry = fluids[i];
+            if (!entry) continue;
+            const material = entry.material;
+            const y = Math.floor(entry.y);
+            if (y < 0 || y >= this.height) continue;
+            const wrappedX = wrapHorizontal(entry.x, this.width) | 0;
+            let chunkX = Math.floor(wrappedX / chunkSize);
+            let chunkY = Math.floor(y / chunkSize);
+            chunkY = Math.max(0, Math.min(maxChunkY, chunkY));
+            chunkX = ((chunkX % totalChunksX) + totalChunksX) % totalChunksX;
+            const key = `${chunkX}|${chunkY}`;
+
+            let list = this.pendingFluidChunks.get(key);
+            if (!list) {
+                list = [];
+                this.pendingFluidChunks.set(key, list);
+            }
+
+            list.push({ x: wrappedX, y, material });
+            this.pendingFluidCount++;
         }
+    }
+
+    spawnFluidParticle(entry) {
+        if (!entry) return false;
+        if (this.sandParticleCount >= this.maxSandParticles) {
+            return false;
+        }
+
+        const { x, y, material } = entry;
+        if (y < 0 || y >= this.height) return false;
+        const sand = this.getSandParticleFromPool();
+        const colorObj = this.terrain.getMaterialColor(material, x, y);
+        const color = colorObj ? colorObj.hex : '#ffffff';
+        sand.init(x, y, material, color, 0);
+        const chunkX = Math.floor(x / this.chunkSize);
+        let chunkY = Math.floor(y / this.chunkSize);
+        const maxChunkY = Math.ceil(this.height / this.chunkSize) - 1;
+        if (chunkY < 0) chunkY = 0;
+        if (chunkY > maxChunkY) chunkY = maxChunkY;
+        this.addSandToChunk(sand, chunkX, chunkY);
+        this.sandParticleCount++;
+        return true;
+    }
+
+    spawnPendingFluids(forceImmediate = false) {
+        if (this.pendingFluidCount === 0) return;
+        if (!forceImmediate && this.tick === this.lastFluidSpawnTick) return;
+
+        this.ensureSandCapacity(this.pendingFluidCount);
+
+        const chunkKeys = this.activeChunkKeys.length ? this.activeChunkKeys : [];
+        if (!forceImmediate && chunkKeys.length === 0) return;
+
+        const globalBudget = forceImmediate
+            ? Math.min(this.pendingFluidCount, this.maxFluidSpawnPerTick * 4)
+            : Math.min(this.pendingFluidCount, this.maxFluidSpawnPerTick);
+        if (globalBudget <= 0) return;
+
+        const perChunkBudget = forceImmediate ? Number.POSITIVE_INFINITY : this.maxFluidSpawnPerChunk;
+        let spawned = 0;
+        let aborted = false;
+
+        const keysToProcess = chunkKeys.length ? chunkKeys : Array.from(this.pendingFluidChunks.keys());
+        if (keysToProcess.length === 0) return;
+
+        const startIndex = forceImmediate ? 0 : (this.tick % keysToProcess.length);
+
+        for (let offset = 0; offset < keysToProcess.length && spawned < globalBudget; offset++) {
+            const index = (startIndex + offset) % keysToProcess.length;
+            const key = keysToProcess[index];
+            const list = this.pendingFluidChunks.get(key);
+            if (!list || list.length === 0) continue;
+
+            const limit = Math.min(list.length, perChunkBudget, globalBudget - spawned);
+            let produced = 0;
+
+            while (list.length > 0 && produced < limit && spawned < globalBudget) {
+                const data = list.pop();
+                if (!this.spawnFluidParticle(data)) {
+                    list.push(data);
+                    aborted = true;
+                    break;
+                }
+                this.pendingFluidCount--;
+                produced++;
+                spawned++;
+            }
+
+            if (list.length === 0) {
+                this.pendingFluidChunks.delete(key);
+            }
+
+            if (aborted) {
+                break;
+            }
+        }
+
+        if (spawned > 0) {
+            this.lastFluidSpawnTick = this.tick;
+        }
+    }
+
+    ensureSandCapacity(pendingFluids = 0) {
+        const area = this.width * this.height;
+        const areaDrivenTarget = Math.min(60000, Math.floor(area * 0.004));
+        const currentNeed = this.sandParticleCount + Math.max(0, pendingFluids);
+        const fluidPadding = pendingFluids > 0 ? Math.max(500, Math.ceil(pendingFluids * 0.1)) : 0;
+        const target = Math.max(this.baseSandCapacity, areaDrivenTarget, currentNeed + fluidPadding);
+        if (target > this.maxSandParticles) {
+            this.maxSandParticles = target;
+        }
+        const desiredPoolLimit = Math.max(5000, Math.floor(this.maxSandParticles * 0.6));
+        const boundedPool = Math.min(this.maxSandParticles, desiredPoolLimit);
+        this.sandPoolLimit = Math.max(this.sandPoolLimit, boundedPool);
     }
 
     findSandParticleAt(x, y) {
@@ -570,6 +716,7 @@ class GameEngine {
         const pixels = chunkData.pixels;
         const explosionFalloff = explosive ? 1 : 0;
 
+        this.ensureSandCapacity(pixels.length);
         if (this.sandParticleCount >= this.maxSandParticles) {
             return;
         }
@@ -629,7 +776,7 @@ class GameEngine {
 
     returnSandParticleToPool(sand) {
         sand.reset();
-        if (this.sandPool.length < 5000) {
+        if (this.sandPool.length < this.sandPoolLimit) {
             this.sandPool.push(sand);
         }
     }
@@ -684,6 +831,9 @@ class GameEngine {
         this.activeSandLists.length = 0;
         this.activeSandChunkKeys.length = 0;
         this.activeSandLookup.length = 0;
+        this.pendingFluidChunks.clear();
+        this.pendingFluidCount = 0;
+        this.lastFluidSpawnTick = -1;
     }
 
     loadSandChunks(snapshot) {
@@ -696,6 +846,15 @@ class GameEngine {
         const totalChunksX = Math.ceil(this.width / this.chunkSize);
         const maxChunkY = Math.ceil(this.height / this.chunkSize) - 1;
         const entries = snapshot.chunks || [];
+        let pendingParticles = 0;
+        for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i];
+            if (!entry || !Array.isArray(entry.particles)) continue;
+            pendingParticles += entry.particles.length;
+        }
+        if (pendingParticles > 0) {
+            this.ensureSandCapacity(pendingParticles);
+        }
 
         for (let i = 0; i < entries.length; i++) {
             const entry = entries[i];
@@ -764,7 +923,7 @@ class GameEngine {
         for (const pData of state.players) {
             let player = this.players.get(pData.id);
             if (!player) {
-                player = this.addPlayer(pData.id, pData.x, pData.y);
+                player = this.addPlayer(pData.id, pData.x, pData.y, pData.selectedSpell);
             }
             player.deserialize(pData);
         }

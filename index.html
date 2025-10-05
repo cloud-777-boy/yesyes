@@ -109,100 +109,6 @@
             color: rgba(255, 255, 255, 0.5);
         }
         
-        #hud {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            background: rgba(10, 10, 26, 0.8);
-            padding: 15px;
-            border-radius: 5px;
-            border: 2px solid #4ecdc4;
-            min-width: 200px;
-        }
-        
-        .hud-item {
-            margin: 5px 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .hud-label {
-            color: #4ecdc4;
-            margin-right: 10px;
-        }
-        
-        .hud-value {
-            color: #ffffff;
-            font-weight: bold;
-        }
-        
-        #spellBar {
-            position: absolute;
-            bottom: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            display: flex;
-            gap: 10px;
-        }
-        
-        .spell-slot {
-            width: 60px;
-            height: 60px;
-            background: rgba(10, 10, 26, 0.8);
-            border: 2px solid #4ecdc4;
-            border-radius: 5px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        
-        .spell-slot:hover {
-            border-color: #ffd93d;
-            transform: translateY(-3px);
-        }
-        
-        .spell-slot.active {
-            border-color: #ffd93d;
-            box-shadow: 0 0 15px rgba(255, 217, 61, 0.7);
-            background: rgba(255, 217, 61, 0.2);
-        }
-        
-        .spell-icon {
-            width: 30px;
-            height: 30px;
-            border-radius: 50%;
-            margin-bottom: 5px;
-        }
-        
-        .spell-name {
-            font-size: 0.7em;
-            color: #ffffff;
-        }
-        
-        .spell-key {
-            font-size: 0.6em;
-            color: #888;
-        }
-        
-        #controls {
-            position: absolute;
-            bottom: 10px;
-            right: 10px;
-            background: rgba(10, 10, 26, 0.8);
-            padding: 15px;
-            border-radius: 5px;
-            border: 2px solid #4ecdc4;
-            font-size: 0.9em;
-        }
-        
-        .control-row {
-            margin: 3px 0;
-        }
-        
         .hidden {
             display: none !important;
         }
@@ -274,51 +180,6 @@
             </div>
         </div>
         
-        <div id="hud" class="hidden">
-            <div class="hud-item">
-                <span class="hud-label">Health:</span>
-                <span class="hud-value" id="health">100</span>
-            </div>
-            <div class="hud-item">
-                <span class="hud-label">Players:</span>
-                <span class="hud-value" id="playerCount">1</span>
-            </div>
-            <div class="hud-item">
-                <span class="hud-label">Ping:</span>
-                <span class="hud-value" id="ping">0ms</span>
-            </div>
-        </div>
-        
-        <div id="spellBar" class="hidden">
-            <div class="spell-slot active" data-spell="0" onclick="selectSpell(0)">
-                <div class="spell-icon" style="background: #ff6b35;"></div>
-                <div class="spell-name">Fire</div>
-                <div class="spell-key">1</div>
-            </div>
-            <div class="spell-slot" data-spell="1" onclick="selectSpell(1)">
-                <div class="spell-icon" style="background: #4ecdc4;"></div>
-                <div class="spell-name">Ice</div>
-                <div class="spell-key">2</div>
-            </div>
-            <div class="spell-slot" data-spell="2" onclick="selectSpell(2)">
-                <div class="spell-icon" style="background: #ffd93d;"></div>
-                <div class="spell-name">Bolt</div>
-                <div class="spell-key">3</div>
-            </div>
-            <div class="spell-slot" data-spell="3" onclick="selectSpell(3)">
-                <div class="spell-icon" style="background: #92633c;"></div>
-                <div class="spell-name">Earth</div>
-                <div class="spell-key">4</div>
-            </div>
-        </div>
-        
-        <div id="controls" class="hidden">
-            <div class="control-row">🎯 <strong>Mouse</strong>: Aim & Shoot</div>
-            <div class="control-row">⬅️➡️ <strong>A/D</strong>: Move</div>
-            <div class="control-row">⬆️ <strong>W/Space</strong>: Jump</div>
-            <div class="control-row">🔢 <strong>1-4</strong>: Select Spell</div>
-        </div>
-        
         <div id="connectionStatus" class="hidden">
             <span class="status-indicator"></span>
             <span id="statusText">Disconnected</span>
@@ -338,7 +199,53 @@
         let game = null;
         let network = null;
         let input = null;
-        
+        const DEFAULT_ASPECT_RATIO = 16 / 9;
+        const IPHONE_LANDSCAPE_ASPECT_RATIO = 19.5 / 9;
+        const CANVAS_VIEWPORT_PADDING = 0.95;
+
+        function isIPhoneLandscape() {
+            const ua = window.navigator.userAgent || '';
+            const platform = window.navigator.platform || '';
+            const maxTouch = window.navigator.maxTouchPoints || 0;
+            const isIPhone = /iPhone/i.test(ua) || /iPhone/i.test(platform);
+            const isAppleHandset = (!isIPhone && /Mac/i.test(platform) && maxTouch > 1 && Math.min(window.innerWidth, window.innerHeight) <= 430);
+            return (isIPhone || isAppleHandset) && window.innerWidth > window.innerHeight;
+        }
+
+        function getTargetAspectRatio() {
+            return isIPhoneLandscape() ? IPHONE_LANDSCAPE_ASPECT_RATIO : DEFAULT_ASPECT_RATIO;
+        }
+
+        function resizeCanvasToViewport() {
+            const canvas = document.getElementById('gameCanvas');
+            if (!canvas) return;
+
+            const aspect = getTargetAspectRatio();
+            const padding = isIPhoneLandscape() ? 1 : CANVAS_VIEWPORT_PADDING;
+            const maxWidth = window.innerWidth * padding;
+            const maxHeight = window.innerHeight * padding;
+
+            let width = maxWidth;
+            let height = width / aspect;
+
+            if (height > maxHeight) {
+                height = maxHeight;
+                width = height * aspect;
+            }
+
+            width = Math.max(1, Math.round(width));
+            height = Math.max(1, Math.round(height));
+
+            canvas.style.width = width + 'px';
+            canvas.style.height = height + 'px';
+            canvas.width = width;
+            canvas.height = height;
+
+            if (game) {
+                game.onCanvasResized();
+            }
+        }
+
         function getDefaultWebSocketUrl() {
             const hostname = window.location.hostname;
             const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
@@ -353,14 +260,17 @@
         
         window.addEventListener('DOMContentLoaded', () => {
             document.getElementById('serverUrl').value = getDefaultWebSocketUrl();
+            resizeCanvasToViewport();
         });
-        
+
         function startSinglePlayer() {
             const canvas = document.getElementById('gameCanvas');
+            resizeCanvasToViewport();
             
             // Initialize game
             game = new GameEngine(canvas, false);
             game.init();
+            game.onCanvasResized();
             
             // Add local player
             const playerId = 'player-' + Math.random().toString(36).substr(2, 9);
@@ -372,9 +282,6 @@
             
             // Hide menu, show HUD
             document.getElementById('menu').classList.add('hidden');
-            document.getElementById('hud').classList.remove('hidden');
-            document.getElementById('spellBar').classList.remove('hidden');
-            document.getElementById('controls').classList.remove('hidden');
             
             // Start game loop
             game.start();
@@ -400,10 +307,12 @@
         function startMultiplayer() {
             const canvas = document.getElementById('gameCanvas');
             const serverUrl = document.getElementById('serverUrl').value;
+            resizeCanvasToViewport();
             
             // Initialize game
             game = new GameEngine(canvas, false);
             game.init();
+            game.onCanvasResized();
             
             // Setup networking
             network = new NetworkManager(game);
@@ -424,9 +333,6 @@
                         
                         // Hide menu, show HUD
                         document.getElementById('menu').classList.add('hidden');
-                        document.getElementById('hud').classList.remove('hidden');
-                        document.getElementById('spellBar').classList.remove('hidden');
-                        document.getElementById('controls').classList.remove('hidden');
                         
                         // Start game loop
                         game.start();
@@ -452,41 +358,13 @@
         
         function updateHUD() {
             if (!game || !game.playerId) return;
-            
-            const player = game.players.get(game.playerId);
-            if (player) {
-                document.getElementById('health').textContent = player.health;
-            }
-            
-            document.getElementById('playerCount').textContent = game.players.size;
-            
+
             if (network) {
-                document.getElementById('ping').textContent = network.getLatency() + 'ms';
-                // Interpolate remote players for smooth movement
                 network.interpolateRemotePlayers();
             }
-            
-            // Update input
+
             if (input) {
                 input.update();
-            }
-        }
-        
-        function selectSpell(index) {
-            if (!game || !game.playerId) return;
-            
-            const player = game.players.get(game.playerId);
-            if (player) {
-                player.selectedSpell = index;
-                
-                // Update UI
-                document.querySelectorAll('.spell-slot').forEach((slot, i) => {
-                    if (i === index) {
-                        slot.classList.add('active');
-                    } else {
-                        slot.classList.remove('active');
-                    }
-                });
             }
         }
         
@@ -507,26 +385,8 @@
         }
         
         // Handle window resize
-        window.addEventListener('resize', () => {
-            if (game && game.canvas) {
-                // Keep canvas aspect ratio
-                const container = document.getElementById('container');
-                const maxWidth = window.innerWidth * 0.95;
-                const maxHeight = window.innerHeight * 0.95;
-                const aspectRatio = 1600 / 900;
-                
-                let width = maxWidth;
-                let height = width / aspectRatio;
-                
-                if (height > maxHeight) {
-                    height = maxHeight;
-                    width = height * aspectRatio;
-                }
-                
-                game.canvas.style.width = width + 'px';
-                game.canvas.style.height = height + 'px';
-            }
-        });
+        window.addEventListener('resize', resizeCanvasToViewport);
+        window.addEventListener('orientationchange', resizeCanvasToViewport);
         
         // Prevent accidental page unload
         window.addEventListener('beforeunload', (e) => {

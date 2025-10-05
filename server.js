@@ -53,7 +53,7 @@ class GameServer {
                 maxHealth: 100,
                 alive: true,
                 aimAngle: 0,
-                selectedSpell: 0,
+                selectedSpell: this.getRandomSpellIndex(),
                 lastInputSequence: 0,
                 joinTime: Date.now()
             };
@@ -66,7 +66,8 @@ class GameServer {
                 playerId: playerId,
                 tick: this.tick,
                 spawnX: player.x,
-                spawnY: player.y
+                spawnY: player.y,
+                selectedSpell: player.selectedSpell
             });
             
             // Notify other players
@@ -74,7 +75,8 @@ class GameServer {
                 type: 'player_joined',
                 playerId: playerId,
                 x: player.x,
-                y: player.y
+                y: player.y,
+                selectedSpell: player.selectedSpell
             }, playerId);
             
             // Send existing players to new player
@@ -84,7 +86,8 @@ class GameServer {
                         type: 'player_joined',
                         playerId: id,
                         x: p.x,
-                        y: p.y
+                        y: p.y,
+                        selectedSpell: p.selectedSpell
                     });
                 }
             }
@@ -306,9 +309,13 @@ class GameServer {
             player.ws.send(JSON.stringify(message));
         }
     }
-    
+
     generatePlayerId() {
         return 'player-' + Math.random().toString(36).substr(2, 9);
+    }
+
+    getRandomSpellIndex() {
+        return Math.floor(Math.random() * 4);
     }
     
     logStats() {

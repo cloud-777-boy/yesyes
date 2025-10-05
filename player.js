@@ -3,7 +3,7 @@
  */
 
 class Player {
-    constructor(id, x, y) {
+    constructor(id, x, y, selectedSpell = null) {
         this.id = id;
         this.x = x;
         this.y = y;
@@ -46,8 +46,18 @@ class Player {
         this.alive = true;
         
         // Spell type
-        this.selectedSpell = 0;
         this.spells = ['fireball', 'ice', 'lightning', 'earth'];
+        const initialSpellIndex = Number.isInteger(selectedSpell)
+            ? selectedSpell
+            : Math.floor(Math.random() * this.spells.length);
+        this.selectedSpell = this.normalizeSpellIndex(initialSpellIndex);
+    }
+
+    normalizeSpellIndex(index) {
+        if (!Number.isInteger(index)) return 0;
+        const length = this.spells.length;
+        if (length === 0) return 0;
+        return ((index % length) + length) % length;
     }
     
     generateColor(id) {
@@ -387,6 +397,6 @@ class Player {
         this.aimAngle = data.aimAngle;
         this.health = data.health;
         this.alive = data.alive;
-        this.selectedSpell = data.selectedSpell;
+        this.selectedSpell = this.normalizeSpellIndex(data.selectedSpell);
     }
 }
