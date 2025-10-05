@@ -120,7 +120,6 @@ class GameServer {
             
             this.players.set(playerId, player);
             
-            const needsSnapshot = !this.terrainSnapshot;
             const welcomePayload = {
                 type: 'welcome',
                 playerId: playerId,
@@ -129,12 +128,9 @@ class GameServer {
                 spawnY: player.y,
                 selectedSpell: player.selectedSpell,
                 seed: this.seed,
-                needsTerrainSnapshot: needsSnapshot,
+                terrainSnapshot: this.terrainSnapshot,
                 terrainMods: this.terrainModifications.slice(-this.maxTerrainModBroadcast)
             };
-            if (this.terrainSnapshot) {
-                welcomePayload.terrainSnapshot = this.terrainSnapshot;
-            }
             this.sendToPlayer(playerId, welcomePayload);
             
             this.broadcast({
@@ -203,9 +199,6 @@ class GameServer {
                 this.handleTerrainDestruction(playerId, msg);
                 break;
 
-            case 'terrain_snapshot':
-                this.handleTerrainSnapshot(playerId, msg.snapshot);
-                break;
                 
             case 'ping':
                 this.sendToPlayer(playerId, {
@@ -284,15 +277,6 @@ class GameServer {
         });
     }
 
-    handleTerrainSnapshot(playerId, snapshot) {
-        if (!snapshot || this.terrainSnapshot) {
-            return;
-        }
-        this.terrainSnapshot = snapshot;
-        this.terrainModifications = [];
-        console.log(`[${new Date().toISOString()}] Terrain snapshot received from ${playerId}. Broadcasting to peers.`);
-        this.broadcast({ type: 'terrain_snapshot', snapshot }, playerId);
-    }
     
     startGameLoop() {
         const tickInterval = 1000 / this.tickRate;
