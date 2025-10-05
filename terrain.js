@@ -355,10 +355,6 @@ class Terrain {
         if (decoded.length !== this.width * this.height) return false;
         this.pixels.set(decoded);
         this.initialFluids = [];
-        this.pixelColors32 = null;
-        this.imageData = null;
-        this.offscreenCanvas = null;
-        this.offscreenCtx = null;
         this.generating = false;
         this.colorCache.clear();
         this.modifiedChunks.clear();
@@ -375,6 +371,10 @@ class Terrain {
         }
         this.rebuildSurfaceCache();
         this.markDirtyRegion(0, 0, this.width - 1, this.height - 1);
+        
+        // Recreate rendering buffers after loading snapshot
+        this.ensureRenderResources();
+        
         return true;
     }
 
