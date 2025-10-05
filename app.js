@@ -85,7 +85,7 @@ class GameServer {
     
     generateServerTerrain() {
         console.log(`[${new Date().toISOString()}] Generating server terrain with seed: ${this.seed}`);
-        const terrain = new Terrain(1600, 900, this.random);
+        const terrain = new Terrain(11200, 900, this.random);
         terrain.generate();
         this.terrainSnapshot = {
             width: terrain.width,
