@@ -110,12 +110,16 @@ class GameEngine {
     
     init(skipTerrainGeneration = false) {
         // Initialize terrain
+        console.log(`[Engine] init() called, skipTerrainGeneration=${skipTerrainGeneration}`);
         const terrainRng = this.random && typeof this.random.fork === 'function'
             ? this.random.fork('terrain')
             : null;
         this.terrain = new Terrain(this.width, this.height, terrainRng);
         if (!skipTerrainGeneration) {
+            console.log('[Engine] Generating terrain locally...');
             this.terrain.generate();
+        } else {
+            console.log('[Engine] Skipping local terrain generation (will load from server)');
         }
         this.sandChunks.clear();
         this.sandParticleCount = 0;
@@ -162,8 +166,17 @@ class GameEngine {
     }
 
     loadTerrainSnapshot(snapshot) {
-        if (!snapshot || !this.terrain || typeof this.terrain.applySnapshot !== 'function') return;
-        if (!this.terrain.applySnapshot(snapshot)) return;
+        console.log('[Engine] loadTerrainSnapshot called', snapshot ? `(${snapshot.width}x${snapshot.height})` : '(null)');
+        if (!snapshot || !this.terrain || typeof this.terrain.applySnapshot !== 'function') {
+            console.warn('[Engine] Cannot load terrain snapshot - missing data or terrain');
+            return;
+        }
+        const success = this.terrain.applySnapshot(snapshot);
+        if (!success) {
+            console.error('[Engine] Failed to apply terrain snapshot');
+            return;
+        }
+        console.log('[Engine] Terrain snapshot loaded successfully');
         this.clearSandChunks();
         this.sandParticleCount = 0;
         this.pendingFluidChunks.clear();

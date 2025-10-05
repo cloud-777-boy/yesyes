@@ -89,7 +89,8 @@ class GameServer {
             pixels: terrain.serializeSnapshot().pixels,
             seed: this.seed
         };
-        console.log(`[${new Date().toISOString()}] Server terrain generated successfully`);
+        const pixelLength = this.terrainSnapshot.pixels ? this.terrainSnapshot.pixels.length : 0;
+        console.log(`[${new Date().toISOString()}] Server terrain generated successfully (${pixelLength} chars base64)`);
     }
     
     setupServer() {
@@ -131,6 +132,7 @@ class GameServer {
                 terrainSnapshot: this.terrainSnapshot,
                 terrainMods: this.terrainModifications.slice(-this.maxTerrainModBroadcast)
             };
+            console.log(`[${new Date().toISOString()}] Sending welcome to ${playerId} with terrain: ${this.terrainSnapshot ? 'YES' : 'NO'}`);
             this.sendToPlayer(playerId, welcomePayload);
             
             this.broadcast({
