@@ -88,6 +88,15 @@ To ensure 100% deterministic shared terrain across all players:
 
 ## Recent Changes
 
+**2025-10-06**: Memory optimization for sand physics (Critical Fix)
+- **Fixed critical memory leak** that caused server crashes after ~2 minutes
+- **Problem**: Sand serialization created thousands of objects per second causing memory exhaustion
+- **Solution**: Implemented throttled sand broadcasts (2Hz instead of 60Hz physics rate)
+- **Implementation**: Added `sandUpdateRate` (2Hz), `lastSandUpdateTime`, and `pendingSandUpdate` tracking
+- **Result**: Server now stable for 2.5+ minutes (previously crashed at ~2 minutes)
+- Applied fix to both app.js and server.js for consistent behavior
+- Sand updates now use efficient chunked serialization with 500ms intervals
+
 **2025-10-06**: Server-side sand physics synchronization
 - Added real-time sand particle synchronization in server.js
 - Server now broadcasts sand updates via `onSandUpdate` callback
