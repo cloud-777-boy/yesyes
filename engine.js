@@ -1137,6 +1137,7 @@ class GameEngine {
 
         this.ensureSandCapacity(pixels.length);
         if (this.sandParticleCount >= this.maxSandParticles) {
+            if (this.isServer) console.log(`[DEBUG] Sand particle limit reached: ${this.sandParticleCount}/${this.maxSandParticles}`);
             return;
         }
 
@@ -1149,6 +1150,8 @@ class GameEngine {
         if (spawnCap <= 0) {
             return;
         }
+        
+        if (this.isServer) console.log(`[DEBUG] Spawning sand: ${pixels.length} pixels destroyed, spawning up to ${spawnCap} sand particles`);
 
         for (let i = 0; i < pixels.length; i++) {
             if (spawned >= spawnCap) break;
@@ -1186,6 +1189,10 @@ class GameEngine {
             }
             this.sandParticleCount++;
             spawned++;
+        }
+        
+        if (this.isServer && spawned > 0) {
+            console.log(`[DEBUG] Spawned ${spawned} sand particles. Total sand: ${this.sandParticleCount}`);
         }
     }
 
