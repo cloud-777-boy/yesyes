@@ -1013,12 +1013,6 @@ class GameEngine {
         if (camX < 0) wrapOffsets.push(-this.width);
         if (camX + viewWidth > this.width) wrapOffsets.push(this.width);
         
-        // Debug: Log active sand lists and count renders
-        let sandRenderCount = 0;
-        if (this.tick % 60 === 0 && this.sandParticleCount > 0) {
-            console.log(`[RENDER DEBUG] activeSandLists.length=${this.activeSandLists.length}, sandParticleCount=${this.sandParticleCount}, warmThreshold=${this.playerChunkComputeRadius + this.playerChunkBufferRadius}`);
-        }
-        
         for (const offset of wrapOffsets) {
             if (offset !== 0) {
                 ctx.save();
@@ -1027,20 +1021,8 @@ class GameEngine {
 
             for (const list of this.activeSandLists) {
                 for (let i = 0; i < list.length; i++) {
-                    const sand = list[i];
-                    if (!sand.dead) {
-                        sandRenderCount++;
-                        // Sample first few particles for position debugging
-                        if (this.tick % 60 === 0 && sandRenderCount <= 3) {
-                            console.log(`[SAND POS] particle ${sandRenderCount}: x=${sand.x.toFixed(1)}, y=${sand.y.toFixed(1)}, color=${sand.color}`);
-                        }
-                    }
-                    sand.render(ctx, scale);
+                    list[i].render(ctx, scale);
                 }
-            }
-            
-            if (this.tick % 60 === 0 && sandRenderCount > 0) {
-                console.log(`[SAND RENDER] Rendered ${sandRenderCount} sand particles this frame, camX=${camX.toFixed(1)}, camY=${camY.toFixed(1)}`);
             }
 
             for (const proj of this.projectiles) {
@@ -1266,7 +1248,7 @@ class GameEngine {
             if (!list || list.length === 0) continue;
             payload.chunks.push({
                 key,
-                particles: list.map(p => ({ x: p.x, y: p.y, material: p.material, color: p.color }))
+                particles: list.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, material: p.material, color: p.color }))
             });
         }
 
@@ -1286,7 +1268,7 @@ class GameEngine {
                     if (!list.length) continue;
                     payload.chunks.push({
                         key,
-                        particles: list.map(p => ({ x: p.x, y: p.y, material: p.material, color: p.color }))
+                        particles: list.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, material: p.material, color: p.color }))
                     });
                 }
             } else {
@@ -1296,7 +1278,7 @@ class GameEngine {
                     if (!list.length) continue;
                     payload.chunks.push({
                         key,
-                        particles: list.map(p => ({ x: p.x, y: p.y, material: p.material, color: p.color }))
+                        particles: list.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, material: p.material, color: p.color }))
                     });
                 }
             }
@@ -1416,7 +1398,11 @@ class GameEngine {
                 const props = this.terrain.substances[material] || {};
                 const mass = typeof props.density === 'number' ? props.density : 1;
                 const isLiquid = props.type === 'liquid';
+                const vx = typeof data.vx === 'number' ? data.vx : 0;
+                const vy = typeof data.vy === 'number' ? data.vy : 0;
                 sand.init(data.x, data.y, material, data.color || '#ffffff', 0, mass, isLiquid);
+                sand.vx = vx;
+                sand.vy = vy;
                 this.addSandToChunk(sand, chunkX, chunkY);
                 this.sandParticleCount++;
             }
