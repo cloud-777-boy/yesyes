@@ -1013,6 +1013,11 @@ class GameEngine {
         if (camX < 0) wrapOffsets.push(-this.width);
         if (camX + viewWidth > this.width) wrapOffsets.push(this.width);
         
+        // Debug: Log active sand lists every second
+        if (this.tick % 60 === 0 && this.sandParticleCount > 0) {
+            console.log(`[RENDER DEBUG] activeSandLists.length=${this.activeSandLists.length}, sandParticleCount=${this.sandParticleCount}, warmThreshold=${this.playerChunkComputeRadius + this.playerChunkBufferRadius}`);
+        }
+        
         for (const offset of wrapOffsets) {
             if (offset !== 0) {
                 ctx.save();
