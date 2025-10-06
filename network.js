@@ -319,11 +319,13 @@ class NetworkManager {
 
     handleTerrainUpdate(msg) {
         if (!this.engineReady) return;
+        console.log(`[DEBUG] Client received terrain_update: x=${msg.x}, y=${msg.y}, radius=${msg.radius}`);
         this.applyTerrainMods([msg]);
     }
 
     handleSandUpdate(msg) {
         if (!this.engineReady || !msg) return;
+        console.log(`[DEBUG] Client received sand_update: ${msg.chunks?.length || 0} chunks, full=${msg.full}`);
         if (msg.full) {
             if (typeof this.engine.loadSandChunks === 'function') {
                 this.engine.loadSandChunks(msg);
