@@ -1110,8 +1110,10 @@ class GameEngine {
 
     destroyTerrain(x, y, radius, explosive = false, broadcast = true) {
         const wrappedX = wrapHorizontal(x, this.width);
+        console.log('[TERRAIN DESTROY] x:', wrappedX, 'y:', y, 'radius:', radius, 'explosive:', explosive, 'isServer:', this.isServer, 'broadcast:', broadcast);
 
         if (!this.isServer && broadcast) {
+            console.log('[TERRAIN DESTROY] Client sending to network');
             if (typeof this.onTerrainDestruction === 'function') {
                 this.onTerrainDestruction({ x: wrappedX, y, radius, explosive, broadcast });
             }
@@ -1120,10 +1122,12 @@ class GameEngine {
 
         const affectedSandChunks = new Set();
         const chunks = this.terrain.destroy(wrappedX, y, radius);
+        console.log('[TERRAIN DESTROY] terrain.destroy() returned', chunks.length, 'chunks');
 
         for (const chunkData of chunks) {
             this.spawnSandFromPixels(chunkData, wrappedX, y, explosive, affectedSandChunks);
         }
+        console.log('[TERRAIN DESTROY] spawned sand in', affectedSandChunks.size, 'chunks');
 
         if (broadcast && this.network && typeof this.network.sendTerrainDestruction === 'function') {
             this.network.sendTerrainDestruction(wrappedX, y, radius, explosive);
