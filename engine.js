@@ -1024,6 +1024,11 @@ class GameEngine {
         if (camX < 0) wrapOffsets.push(-this.width);
         if (camX + viewWidth > this.width) wrapOffsets.push(this.width);
         
+        // Debug: log sand rendering
+        if (this.tick % 120 === 0 && this.sandParticleCount > 0) {
+            console.log('[SAND RENDER] tick:', this.tick, 'sandCount:', this.sandParticleCount, 'activeLists:', this.activeSandLists.length, 'activeLookup:', this.activeSandLookup.length);
+        }
+        
         for (const offset of wrapOffsets) {
             if (offset !== 0) {
                 ctx.save();

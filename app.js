@@ -443,8 +443,7 @@ class GameServer {
     }
 
     broadcastPendingSandUpdate() {
-        // Only broadcast when there are actual pending sand updates
-        if (!this.hasPendingSandUpdate || !this.engine) return;
+        if (!this.engine) return;
         
         const now = Date.now();
         const timeSinceLastUpdate = now - this.lastSandUpdateTime;
@@ -454,7 +453,7 @@ class GameServer {
             return;
         }
         
-        // Only broadcast sand chunks near players for efficiency
+        // Broadcast sand chunks near players whenever sand exists
         if (this.engine.sandParticleCount > 0 && this.engine.players.size > 0) {
             // Get sand data only for chunks near players
             const sandUpdate = this.engine.serializeSandChunksNearPlayers(this.sandChunkRadius);
@@ -467,11 +466,12 @@ class GameServer {
                 };
                 this.broadcast(message);
                 this.lastSandUpdateTime = now;
+                this.hasPendingSandUpdate = false;
             }
+        } else {
+            // No sand to broadcast, clear flag
+            this.hasPendingSandUpdate = false;
         }
-        
-        // Clear pending update flag
-        this.hasPendingSandUpdate = false;
     }
     
     broadcastSandUpdate(payload, forceFull = false) {
