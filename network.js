@@ -324,21 +324,17 @@ class NetworkManager {
 
     handleSandUpdate(msg) {
         if (!this.engineReady || !msg) return;
-        console.log('[SAND UPDATE] Received:', msg.chunks?.length || 0, 'chunks, full:', msg.full);
         if (msg.full) {
             if (typeof this.engine.loadSandChunks === 'function') {
                 this.engine.loadSandChunks(msg);
-                console.log('[SAND UPDATE] Loaded full sand snapshot, count:', this.engine.sandParticleCount);
             }
             return;
         }
 
         if (typeof this.engine.updateSandChunks === 'function') {
             this.engine.updateSandChunks(msg);
-            console.log('[SAND UPDATE] Updated sand chunks, count:', this.engine.sandParticleCount);
         } else if (typeof this.engine.loadSandChunks === 'function') {
             this.engine.loadSandChunks(msg);
-            console.log('[SAND UPDATE] Loaded sand chunks, count:', this.engine.sandParticleCount);
         }
     }
 

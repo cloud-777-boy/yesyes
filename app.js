@@ -104,10 +104,16 @@ class GameServer {
             if (broadcast === false) return;
             this.recordAndBroadcastTerrainModification(x, y, radius, explosive);
         };
-        // Mark that sand updates are pending but don't store stale data
+        // IMMEDIATE REAL-TIME SAND BROADCAST - NO THROTTLING
         this.engine.onSandUpdate = (payload) => {
-            // Just flag that we have pending sand updates
-            this.hasPendingSandUpdate = true;
+            if (payload && payload.chunks && payload.chunks.length > 0) {
+                this.broadcast({
+                    type: 'sand_update',
+                    chunkSize: payload.chunkSize,
+                    chunks: payload.chunks,
+                    full: false
+                });
+            }
         };
         this.terrainSnapshot = this.engine.getTerrainSnapshot();
         this.tick = this.engine.tick;
@@ -362,11 +368,6 @@ class GameServer {
         setInterval(() => {
             this.broadcastState();
         }, stateInterval);
-        
-        // Throttled sand updates to prevent memory leak
-        setInterval(() => {
-            this.broadcastPendingSandUpdate();
-        }, sandInterval);
         
         setInterval(() => {
             this.logStats();
