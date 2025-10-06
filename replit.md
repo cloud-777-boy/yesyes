@@ -88,14 +88,24 @@ To ensure 100% deterministic shared terrain across all players:
 
 ## Recent Changes
 
+**2025-10-06**: Spatial filtering for sand particle synchronization
+- **Optimization**: Sand updates now use player-based spatial filtering
+- **Implementation**: New `serializeSandChunksNearPlayers()` method in engine.js
+- **Behavior**: Only broadcasts sand chunks within 15-chunk radius of active players
+- **Performance**: Increased update rate to 20Hz (from 2Hz) while reducing bandwidth
+- **Result**: Real-time sand physics for visible areas, minimal network overhead for distant areas
+- **Efficiency**: Updates only sent when physics actually changes (`hasPendingSandUpdate` gate)
+- Handles world wrapping correctly for horizontal edges
+- Applied consistently to both app.js and server.js
+
 **2025-10-06**: Memory optimization for sand physics (Critical Fix)
 - **Fixed critical memory leak** that caused server crashes after ~2 minutes
 - **Problem**: Sand serialization created thousands of objects per second causing memory exhaustion
-- **Solution**: Implemented throttled sand broadcasts (2Hz instead of 60Hz physics rate)
-- **Implementation**: Added `sandUpdateRate` (2Hz), `lastSandUpdateTime`, and `pendingSandUpdate` tracking
-- **Result**: Server now stable for 2.5+ minutes (previously crashed at ~2 minutes)
+- **Solution**: Implemented throttled sand broadcasts with pending update tracking
+- **Implementation**: Added `sandUpdateRate`, `lastSandUpdateTime`, and `hasPendingSandUpdate` tracking
+- **Result**: Server now stable with controlled memory usage
 - Applied fix to both app.js and server.js for consistent behavior
-- Sand updates now use efficient chunked serialization with 500ms intervals
+- Sand updates now use efficient chunked serialization
 
 **2025-10-06**: Server-side sand physics synchronization
 - Added real-time sand particle synchronization in server.js
