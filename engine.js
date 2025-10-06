@@ -452,8 +452,19 @@ class GameEngine {
             }
         }
 
-        // Update falling sand
-        this.updateSand(dt);
+        // Update falling sand (server-authoritative)
+        if (this.isServer) {
+            this.updateSand(dt);
+        } else {
+            // Client-side: extrapolate sand positions using velocity for smooth rendering
+            for (let i = 0; i < this.activeSandLookup.length; i++) {
+                const sand = this.activeSandLookup[i];
+                if (!sand.dead && (sand.vx !== 0 || sand.vy !== 0)) {
+                    sand.x += sand.vx * dt / 16.666;
+                    sand.y += sand.vy * dt / 16.666;
+                }
+            }
+        }
 
         // Update particles
         for (let i = this.particles.length - 1; i >= 0; i--) {
