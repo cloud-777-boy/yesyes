@@ -81,6 +81,11 @@ class GameServer {
         this.tickRate = 60;
         this.stateUpdateRate = 20;
         
+        // Sand update throttling
+        this.sandUpdateRate = 10; // Sand updates per second (reduced from state update rate)
+        this.lastSandUpdateTime = 0;
+        this.pendingSandUpdate = null;
+        
         this.startTime = Date.now();
         this.totalMessages = 0;
 
@@ -98,7 +103,11 @@ class GameServer {
             if (broadcast === false) return;
             this.recordAndBroadcastTerrainModification(x, y, radius, explosive);
         };
-        this.engine.onSandUpdate = (payload) => this.broadcastSandUpdate(payload);
+        // Throttle sand updates to prevent memory leak
+        this.engine.onSandUpdate = (payload) => {
+            // Store the latest sand update instead of broadcasting immediately
+            this.pendingSandUpdate = payload;
+        };
         this.terrainSnapshot = this.engine.getTerrainSnapshot();
         this.tick = this.engine.tick;
         const pixelLength = this.terrainSnapshot && this.terrainSnapshot.pixels
@@ -356,6 +365,7 @@ class GameServer {
     startGameLoop() {
         const tickInterval = 1000 / this.tickRate;
         const stateInterval = 1000 / this.stateUpdateRate;
+        const sandInterval = 1000 / this.sandUpdateRate;
         
         setInterval(() => {
             this.updatePhysics();
@@ -364,6 +374,11 @@ class GameServer {
         setInterval(() => {
             this.broadcastState();
         }, stateInterval);
+        
+        // Throttled sand updates to prevent memory leak
+        setInterval(() => {
+            this.broadcastPendingSandUpdate();
+        }, sandInterval);
         
         setInterval(() => {
             this.logStats();
@@ -418,10 +433,8 @@ class GameServer {
             terrainMods
         };
 
-        const sandUpdate = this.engine.serializeSandChunks(true);
-        if (sandUpdate) {
-            state.sandChunks = sandUpdate;
-        }
+        // Sand updates are now handled separately with throttling
+        // to prevent memory leaks
 
         this.broadcast(state);
 
@@ -441,6 +454,35 @@ class GameServer {
         }
     }
 
+    broadcastPendingSandUpdate() {
+        // Only broadcast if we have pending sand updates and enough time has passed
+        if (!this.pendingSandUpdate || !this.engine) return;
+        
+        const now = Date.now();
+        const timeSinceLastUpdate = now - this.lastSandUpdateTime;
+        
+        // Ensure minimum time between updates
+        if (timeSinceLastUpdate < (1000 / this.sandUpdateRate)) {
+            return;
+        }
+        
+        // Get fresh sand data but only for active chunks
+        const sandUpdate = this.engine.serializeSandChunks(true);
+        if (sandUpdate && sandUpdate.chunks && sandUpdate.chunks.length > 0) {
+            const message = {
+                type: 'sand_update',
+                chunkSize: sandUpdate.chunkSize,
+                chunks: sandUpdate.chunks,
+                full: false
+            };
+            this.broadcast(message);
+            this.lastSandUpdateTime = now;
+        }
+        
+        // Clear pending update
+        this.pendingSandUpdate = null;
+    }
+    
     broadcastSandUpdate(payload, forceFull = false) {
         if (!payload || !Array.isArray(payload.chunks) || payload.chunks.length === 0) return;
         const message = {
