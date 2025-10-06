@@ -1117,13 +1117,8 @@ class GameEngine {
             this.onTerrainDestruction({ x: wrappedX, y, radius, explosive, broadcast });
         }
 
-        if (this.isServer) {
-            console.log(`[DEBUG] affectedSandChunks size: ${affectedSandChunks.size}`);
-            console.log(`[DEBUG] onSandUpdate is function: ${typeof this.onSandUpdate === 'function'}`);
-        }
         if (typeof this.onSandUpdate === 'function' && affectedSandChunks.size > 0) {
             const sandPayload = this.serializeSandChunksForKeys(affectedSandChunks);
-            if (this.isServer) console.log(`[DEBUG] sandPayload created: ${sandPayload ? 'yes' : 'no'}`);
             if (sandPayload) {
                 this.onSandUpdate(sandPayload);
             }
@@ -1142,7 +1137,6 @@ class GameEngine {
 
         this.ensureSandCapacity(pixels.length);
         if (this.sandParticleCount >= this.maxSandParticles) {
-            if (this.isServer) console.log(`[DEBUG] Sand particle limit reached: ${this.sandParticleCount}/${this.maxSandParticles}`);
             return;
         }
 
@@ -1155,8 +1149,6 @@ class GameEngine {
         if (spawnCap <= 0) {
             return;
         }
-        
-        if (this.isServer) console.log(`[DEBUG] Spawning sand: ${pixels.length} pixels destroyed, spawning up to ${spawnCap} sand particles`);
 
         for (let i = 0; i < pixels.length; i++) {
             if (spawned >= spawnCap) break;
@@ -1194,10 +1186,6 @@ class GameEngine {
             }
             this.sandParticleCount++;
             spawned++;
-        }
-        
-        if (this.isServer && spawned > 0) {
-            console.log(`[DEBUG] Spawned ${spawned} sand particles. Total sand: ${this.sandParticleCount}`);
         }
     }
 

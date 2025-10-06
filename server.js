@@ -71,7 +71,6 @@ class GameServer {
         engine.onSandUpdate = (payload) => {
             // Just flag that we have pending sand updates
             this.hasPendingSandUpdate = true;
-            console.log(`[DEBUG] Sand update pending - ${payload.chunks ? payload.chunks.length : 0} chunks`);
         };
         return engine;
     }
@@ -388,7 +387,6 @@ class GameServer {
     }
 
     recordAndBroadcastTerrainModification(x, y, radius, explosive) {
-        console.log(`[DEBUG] Terrain destroyed at (${x}, ${y}) radius=${radius} explosive=${explosive}`);
         const mod = {
             tick: this.currentSimulationTick ?? this.tick,
             x,
@@ -412,7 +410,6 @@ class GameServer {
 
     handleServerProjectileSpawn(projectile) {
         if (!projectile) return;
-        console.log(`[DEBUG] Projectile spawned: type=${projectile.type} pos=(${projectile.x.toFixed(0)}, ${projectile.y.toFixed(0)})`);
         const payload = {
             type: 'projectile',
             x: projectile.x,
