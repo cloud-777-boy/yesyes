@@ -404,6 +404,17 @@ class GameServer {
         };
         this.broadcast(payload);
     }
+
+    broadcastSandUpdate(payload, forceFull = false) {
+        if (!payload || !Array.isArray(payload.chunks) || payload.chunks.length === 0) return;
+        const message = {
+            type: 'sand_update',
+            chunkSize: payload.chunkSize,
+            chunks: payload.chunks,
+            full: forceFull || !!payload.full
+        };
+        this.broadcast(message);
+    }
 }
 
 // Start server
