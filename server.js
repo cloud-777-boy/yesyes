@@ -62,6 +62,7 @@ class GameServer {
             if (broadcast === false) return;
             this.recordAndBroadcastTerrainModification(x, y, radius, explosive);
         };
+        engine.onSandUpdate = (payload) => this.broadcastSandUpdate(payload);
         return engine;
     }
 
