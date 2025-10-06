@@ -51,6 +51,7 @@ class GameEngine {
         this.playerList = [];
         this.projectiles = [];
         this.particles = [];
+        this.inputManager = null;
         this.playerChunkComputeRadius = 1;
         this.playerChunkBufferRadius = 2;
         this.maxComputedSandPriority = 1;
@@ -167,6 +168,10 @@ class GameEngine {
             this.eigenSand.updateChunks(this.activeSandChunkPriority);
         }
         this.spawnPendingFluids(true);
+    }
+
+    setInputManager(manager) {
+        this.inputManager = manager || null;
     }
 
     getTerrainSnapshot() {
@@ -391,6 +396,9 @@ class GameEngine {
         this.spawnPendingFluids(false);
 
         if (!this.isServer) {
+            if (this.inputManager && typeof this.inputManager.update === 'function') {
+                this.inputManager.update();
+            }
             const localPlayer = this.playerId ? this.players.get(this.playerId) : null;
             if (localPlayer) {
                 localPlayer.update(dt, this);
@@ -1066,8 +1074,16 @@ class GameEngine {
         return this.liquidBlobCache.get(key) || null;
     }
     
-    spawnProjectile(x, y, vx, vy, type, ownerId) {
+    spawnProjectile(x, y, vx, vy, type, ownerId, options = null) {
         const proj = new Projectile(wrapHorizontal(x, this.width), y, vx, vy, type, ownerId);
+        if (options && typeof options === 'object') {
+            if (options.clientProjectileId) {
+                proj.clientProjectileId = options.clientProjectileId;
+            }
+            if (options.pending) {
+                proj.pending = true;
+            }
+        }
         this.projectiles.push(proj);
         if (typeof this.onProjectileSpawn === 'function') {
             this.onProjectileSpawn(proj);

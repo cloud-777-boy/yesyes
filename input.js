@@ -22,6 +22,13 @@ class InputManager {
         this.touchJumpQueued = false;
         this.isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0;
         this.isPhoneDevice = this.detectPhoneDevice();
+        this.lastSentInput = null;
+        this.lastSendTime = 0;
+        this.sendIntervalMs = 1000 / 60;
+
+        if (engine && typeof engine.setInputManager === 'function') {
+            engine.setInputManager(this);
+        }
 
         this.setupListeners();
     }
@@ -94,7 +101,8 @@ class InputManager {
         window.addEventListener('orientationchange', updateDeviceClass);
     }
 
-    update() {
+    update(options = {}) {
+        const { skipNetwork = false, forceSend = false } = options || {};
         const player = this.engine.players.get(this.engine.playerId);
         if (!player || !player.alive) return;
 
@@ -107,26 +115,44 @@ class InputManager {
 
         // Build input state
         const input = {
-            left: moveLeft,
-            right: moveRight,
-            jump,
-            shoot: this.mouseDown,
+            left: !!moveLeft,
+            right: !!moveRight,
+            jump: !!jump,
+            shoot: !!this.mouseDown,
             mouseX: this.mouseWorldX,
             mouseY: this.mouseWorldY
         };
 
         this.touchJumpQueued = false;
 
-        // Send to network or apply locally
-        if (this.network && this.network.connected) {
-            this.network.sendInput(input);
-            // Client-side responsiveness: immediately apply latest inputs locally
-            player.input = { ...input };
-        } else {
-            // Offline mode - apply directly
-            player.input = { ...input };
+        const now = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
+            ? performance.now()
+            : Date.now();
+        const sendEnabled = !!(this.network && this.network.connected) && !skipNetwork;
+
+        if (sendEnabled) {
+            const last = this.lastSentInput;
+            const hasChanged = !last
+                || last.left !== input.left
+                || last.right !== input.right
+                || last.jump !== input.jump
+                || last.shoot !== input.shoot
+                || Math.abs((last.mouseX || 0) - (input.mouseX || 0)) > 0.5
+                || Math.abs((last.mouseY || 0) - (input.mouseY || 0)) > 0.5;
+            const elapsed = now - this.lastSendTime;
+
+            if (forceSend || hasChanged || elapsed >= this.sendIntervalMs) {
+                this.network.sendInput({ ...input });
+                this.lastSendTime = now;
+                this.lastSentInput = { ...input };
+            }
+        } else if (!this.network || !this.network.connected) {
+            this.lastSentInput = null;
         }
-        
+
+        // Client-side responsiveness: immediately apply latest inputs locally
+        player.input = { ...input };
+
         // Update camera to follow player
         this.updateCamera(player);
     }

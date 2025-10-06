@@ -115,7 +115,9 @@ class GameServer {
             vx: projectile.vx,
             vy: projectile.vy,
             type: projectile.type,
-            ownerId: projectile.ownerId
+            ownerId: projectile.ownerId,
+            clientProjectileId: projectile.clientProjectileId || null,
+            lifetime: projectile.lifetime
         };
         this.broadcast(payload);
     }
@@ -306,10 +308,29 @@ class GameServer {
     }
 
     handleProjectile(playerId, msg) {
-        // Legacy compatibility: clients previously spawned projectiles locally and
-        // informed the server. The authoritative server now owns projectile
-        // spawning, so we simply ignore these packets to avoid duplicate spells.
-        return;
+        if (!this.engine) return;
+        const playerInfo = this.players.get(playerId);
+        const ownerId = playerInfo ? playerInfo.id : playerId;
+
+        const x = typeof msg.x === 'number' ? msg.x : null;
+        const y = typeof msg.y === 'number' ? msg.y : null;
+        const vx = typeof msg.vx === 'number' ? msg.vx : 0;
+        const vy = typeof msg.vy === 'number' ? msg.vy : 0;
+        const type = typeof msg.type === 'string' ? msg.type : 'fireball';
+
+        if (x === null || y === null) return;
+
+        const projectile = this.engine.spawnProjectile(x, y, vx, vy, type, ownerId, {
+            clientProjectileId: msg.clientProjectileId || null
+        });
+        if (projectile) {
+            // Immediately run an authoritative update step to resolve collisions
+            const dt = this.engine.fixedTimeStep || (1000 / this.tickRate);
+            projectile.update(dt, this.engine);
+            if (projectile.dead) {
+                return;
+            }
+        }
     }
 
     handleTerrainDestruction(playerId, msg) {
@@ -366,7 +387,8 @@ class GameServer {
             vy: proj.vy,
             type: proj.type,
             ownerId: proj.ownerId,
-            lifetime: proj.lifetime
+            lifetime: proj.lifetime,
+            clientProjectileId: proj.clientProjectileId || null
         }));
 
         const terrainMods = this.pendingTerrainBroadcasts.length

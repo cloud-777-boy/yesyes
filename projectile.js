@@ -16,6 +16,7 @@ class Projectile {
         this.lifetime = 0;
         this.maxLifetime = 3000;
         this.dead = false;
+        this.pending = false;
         
         // Effect properties based on type
         this.setupType();
@@ -93,8 +94,14 @@ class Projectile {
                     return;
                 }
             } else {
-                this.x = wrapHorizontal(this.x + stepX, engine.width);
-                this.y += stepY;
+                const hit = this.raycast(engine, this.x, this.y, stepX, stepY);
+                this.x = wrapHorizontal(hit.x, engine.width);
+                this.y = hit.y;
+
+                if (hit.collided) {
+                    this.dead = true;
+                    return;
+                }
             }
         } else {
             this.x += stepX;
@@ -112,14 +119,8 @@ class Projectile {
         
         if (!engine) return;
 
+        // Check collision with players (server authoritative)
         if (isAuthoritative) {
-            // Check collision with terrain
-            if (engine.terrain.isSolid(Math.floor(this.x), Math.floor(this.y))) {
-                this.explode(engine);
-                return;
-            }
-
-            // Check collision with players
             for (const [id, player] of engine.players.entries()) {
                 if (id === this.ownerId) continue;
                 if (!player.alive) continue;
@@ -171,11 +172,12 @@ class Projectile {
     }
     
     explode(engine) {
-        // Destroy terrain
+        const isAuthoritative = engine ? !!engine.isServer : false;
+
         if (this.explosionRadius > 0) {
             engine.destroyTerrain(this.x, this.y, this.explosionRadius, true);
         }
-        
+
         // Damage nearby players
         for (const [id, player] of engine.players.entries()) {
             if (id === this.ownerId) continue;

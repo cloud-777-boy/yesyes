@@ -174,18 +174,33 @@ class Player {
         
         const staffEndX = centerX + Math.cos(this.aimAngle) * this.staffLength;
         const staffEndY = centerY + Math.sin(this.aimAngle) * this.staffLength;
-        
+
         const speed = 8;
         const vx = Math.cos(this.aimAngle) * speed;
         const vy = Math.sin(this.aimAngle) * speed;
-        
+
         const spell = this.spells[this.selectedSpell];
         const spawnX = wrapHorizontal(staffEndX, engine.width);
-        engine.spawnProjectile(spawnX, staffEndY, vx, vy, spell, this.id);
 
-        // Particle effect
-        const color = this.getSpellColor(spell);
-        engine.spawnParticles(spawnX, staffEndY, 5, color);
+        const isOnline = engine && engine.network && engine.network.connected;
+        const projectile = engine.spawnProjectile(
+            spawnX,
+            staffEndY,
+            vx,
+            vy,
+            spell,
+            this.id,
+            { pending: isOnline }
+        );
+
+        if (isOnline && projectile && typeof engine.network.sendProjectile === 'function') {
+            engine.network.sendProjectile(projectile);
+        }
+
+        if (engine && typeof engine.spawnParticles === 'function') {
+            const color = this.getSpellColor(spell);
+            engine.spawnParticles(spawnX, staffEndY, 5, color);
+        }
     }
     
     getSpellColor(spell) {
