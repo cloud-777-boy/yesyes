@@ -282,6 +282,8 @@ class GameServer {
         setInterval(() => {
             this.logStats();
         }, 10000); // Every 10 seconds
+        
+        // Don't run test automatically - wait for players to test
     }
     
     updatePhysics() {
@@ -424,8 +426,8 @@ class GameServer {
     }
 
     broadcastPendingSandUpdate() {
-        // Only broadcast if we have pending sand updates
-        if (!this.hasPendingSandUpdate || !this.engine) return;
+        // Always check for sand particles and broadcast if they exist
+        if (!this.engine) return;
         
         const now = Date.now();
         const timeSinceLastUpdate = now - this.lastSandUpdateTime;
@@ -435,20 +437,21 @@ class GameServer {
             return;
         }
         
-        // Get fresh sand data with current version numbers
-        const sandUpdate = this.engine.serializeSandChunks(false); // Use delta updates
-        if (sandUpdate && sandUpdate.chunks && sandUpdate.chunks.length > 0) {
-            const message = {
-                type: 'sand_update',
-                chunkSize: sandUpdate.chunkSize,
-                chunks: sandUpdate.chunks,
-                full: sandUpdate.full || false
-            };
-            console.log(`[DEBUG] Broadcasting sand update: ${sandUpdate.chunks.length} chunks, full=${sandUpdate.full}`);
-            this.broadcast(message);
-            this.lastSandUpdateTime = now;
-        } else {
-            console.log(`[DEBUG] No sand chunks to broadcast`);
+        // Always check for sand particles, not just when flagged
+        if (this.engine.sandParticleCount > 0) {
+            // Get fresh sand data with current version numbers
+            const sandUpdate = this.engine.serializeSandChunks(false); // Use delta updates
+            if (sandUpdate && sandUpdate.chunks && sandUpdate.chunks.length > 0) {
+                const message = {
+                    type: 'sand_update',
+                    chunkSize: sandUpdate.chunkSize,
+                    chunks: sandUpdate.chunks,
+                    full: sandUpdate.full || false
+                };
+                //console.log(`[DEBUG] Broadcasting sand update: ${sandUpdate.chunks.length} chunks, particles=${this.engine.sandParticleCount}`);
+                this.broadcast(message);
+                this.lastSandUpdateTime = now;
+            }
         }
         
         // Clear pending update flag

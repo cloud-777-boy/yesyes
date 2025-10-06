@@ -1117,8 +1117,13 @@ class GameEngine {
             this.onTerrainDestruction({ x: wrappedX, y, radius, explosive, broadcast });
         }
 
+        if (this.isServer) {
+            console.log(`[DEBUG] affectedSandChunks size: ${affectedSandChunks.size}`);
+            console.log(`[DEBUG] onSandUpdate is function: ${typeof this.onSandUpdate === 'function'}`);
+        }
         if (typeof this.onSandUpdate === 'function' && affectedSandChunks.size > 0) {
             const sandPayload = this.serializeSandChunksForKeys(affectedSandChunks);
+            if (this.isServer) console.log(`[DEBUG] sandPayload created: ${sandPayload ? 'yes' : 'no'}`);
             if (sandPayload) {
                 this.onSandUpdate(sandPayload);
             }
