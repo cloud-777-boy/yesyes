@@ -1013,7 +1013,8 @@ class GameEngine {
         if (camX < 0) wrapOffsets.push(-this.width);
         if (camX + viewWidth > this.width) wrapOffsets.push(this.width);
         
-        // Debug: Log active sand lists every second
+        // Debug: Log active sand lists and count renders
+        let sandRenderCount = 0;
         if (this.tick % 60 === 0 && this.sandParticleCount > 0) {
             console.log(`[RENDER DEBUG] activeSandLists.length=${this.activeSandLists.length}, sandParticleCount=${this.sandParticleCount}, warmThreshold=${this.playerChunkComputeRadius + this.playerChunkBufferRadius}`);
         }
@@ -1026,8 +1027,14 @@ class GameEngine {
 
             for (const list of this.activeSandLists) {
                 for (let i = 0; i < list.length; i++) {
-                    list[i].render(ctx, scale);
+                    const sand = list[i];
+                    if (!sand.dead) sandRenderCount++;
+                    sand.render(ctx, scale);
                 }
+            }
+            
+            if (this.tick % 60 === 0 && sandRenderCount > 0) {
+                console.log(`[SAND RENDER] Rendered ${sandRenderCount} sand particles this frame`);
             }
 
             for (const proj of this.projectiles) {
