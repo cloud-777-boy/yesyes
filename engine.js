@@ -1028,13 +1028,19 @@ class GameEngine {
             for (const list of this.activeSandLists) {
                 for (let i = 0; i < list.length; i++) {
                     const sand = list[i];
-                    if (!sand.dead) sandRenderCount++;
+                    if (!sand.dead) {
+                        sandRenderCount++;
+                        // Sample first few particles for position debugging
+                        if (this.tick % 60 === 0 && sandRenderCount <= 3) {
+                            console.log(`[SAND POS] particle ${sandRenderCount}: x=${sand.x.toFixed(1)}, y=${sand.y.toFixed(1)}, color=${sand.color}`);
+                        }
+                    }
                     sand.render(ctx, scale);
                 }
             }
             
             if (this.tick % 60 === 0 && sandRenderCount > 0) {
-                console.log(`[SAND RENDER] Rendered ${sandRenderCount} sand particles this frame`);
+                console.log(`[SAND RENDER] Rendered ${sandRenderCount} sand particles this frame, camX=${camX.toFixed(1)}, camY=${camY.toFixed(1)}`);
             }
 
             for (const proj of this.projectiles) {
