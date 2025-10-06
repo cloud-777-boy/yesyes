@@ -49,7 +49,7 @@ class GameServer {
         // Sand update throttling to prevent memory leak
         this.sandUpdateRate = 10; // Sand updates per second (reduced from state update rate)
         this.lastSandUpdateTime = 0;
-        this.pendingSandUpdate = null;
+        this.hasPendingSandUpdate = false;
         
         // Performance tracking
         this.startTime = Date.now();
@@ -67,10 +67,10 @@ class GameServer {
             if (broadcast === false) return;
             this.recordAndBroadcastTerrainModification(x, y, radius, explosive);
         };
-        // Throttle sand updates to prevent memory leak
+        // Mark that sand updates are pending but don't store stale data
         engine.onSandUpdate = (payload) => {
-            // Store the latest sand update instead of broadcasting immediately
-            this.pendingSandUpdate = payload;
+            // Just flag that we have pending sand updates
+            this.hasPendingSandUpdate = true;
         };
         return engine;
     }
@@ -421,32 +421,32 @@ class GameServer {
     }
 
     broadcastPendingSandUpdate() {
-        // Only broadcast if we have pending sand updates and enough time has passed
-        if (!this.pendingSandUpdate || !this.engine) return;
+        // Only broadcast if we have pending sand updates
+        if (!this.hasPendingSandUpdate || !this.engine) return;
         
         const now = Date.now();
         const timeSinceLastUpdate = now - this.lastSandUpdateTime;
         
-        // Ensure minimum time between updates
+        // Ensure minimum time between updates  
         if (timeSinceLastUpdate < (1000 / this.sandUpdateRate)) {
             return;
         }
         
-        // Get fresh sand data but only for active chunks
-        const sandUpdate = this.engine.serializeSandChunks(true);
+        // Get fresh sand data with current version numbers
+        const sandUpdate = this.engine.serializeSandChunks(false); // Use delta updates
         if (sandUpdate && sandUpdate.chunks && sandUpdate.chunks.length > 0) {
             const message = {
                 type: 'sand_update',
                 chunkSize: sandUpdate.chunkSize,
                 chunks: sandUpdate.chunks,
-                full: false
+                full: sandUpdate.full || false
             };
             this.broadcast(message);
             this.lastSandUpdateTime = now;
         }
         
-        // Clear pending update
-        this.pendingSandUpdate = null;
+        // Clear pending update flag
+        this.hasPendingSandUpdate = false;
     }
     
     broadcastSandUpdate(payload, forceFull = false) {
