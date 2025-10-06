@@ -1314,7 +1314,7 @@ class GameEngine {
             if (!list || list.length === 0) continue;
             chunks.push({
                 key,
-                particles: list.map(p => ({ x: p.x, y: p.y, material: p.material, color: p.color }))
+                particles: list.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, material: p.material, color: p.color }))
             });
         }
         if (chunks.length === 0) return null;

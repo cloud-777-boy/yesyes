@@ -88,6 +88,13 @@ To ensure 100% deterministic shared terrain across all players:
 
 ## Recent Changes
 
+**2025-10-06**: Fixed sand rendering bug + Real-time terrain/sand updates
+- **CRITICAL FIX**: Added velocity (vx, vy) to `serializeSandChunksForKeys()` - sand now renders properly
+- **Real-time streaming**: Removed all throttling - terrain destruction and sand broadcast immediately
+- **Architecture**: Sand updates now use `onSandUpdate` callback for instant broadcast (no delays)
+- Sand particles now include velocity for smooth client-side extrapolation between server updates
+- Terrain destruction broadcasts in real-time with no throttling for instant visual feedback
+
 **2025-10-06**: Spatial filtering for sand particle synchronization
 - **Optimization**: Sand updates now use player-based spatial filtering
 - **Implementation**: New `serializeSandChunksNearPlayers()` method in engine.js
