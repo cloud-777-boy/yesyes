@@ -107,7 +107,6 @@ class GameServer {
         // Mark that sand updates are pending but don't store stale data
         this.engine.onSandUpdate = (payload) => {
             // Just flag that we have pending sand updates
-            console.log(`[DEBUG] Sand update triggered, chunks=${payload?.chunks?.length || 0}`);
             this.hasPendingSandUpdate = true;
         };
         this.terrainSnapshot = this.engine.getTerrainSnapshot();
@@ -150,7 +149,6 @@ class GameServer {
         if (this.pendingTerrainBroadcasts.length > this.maxTerrainModBroadcast) {
             this.pendingTerrainBroadcasts.splice(0, this.pendingTerrainBroadcasts.length - this.maxTerrainModBroadcast);
         }
-        console.log(`[DEBUG] Broadcasting terrain_update: x=${x}, y=${y}, radius=${radius}`);
         this.broadcast({
             type: 'terrain_update',
             x,
@@ -467,7 +465,6 @@ class GameServer {
                     chunks: sandUpdate.chunks,
                     full: false
                 };
-                console.log(`[DEBUG] Broadcasting sand_update: ${sandUpdate.chunks.length} chunks`);
                 this.broadcast(message);
                 this.lastSandUpdateTime = now;
             }
