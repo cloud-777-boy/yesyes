@@ -88,6 +88,13 @@ To ensure 100% deterministic shared terrain across all players:
 
 ## Recent Changes
 
+**2025-10-06**: Server-side sand physics synchronization
+- Added real-time sand particle synchronization in server.js
+- Server now broadcasts sand updates via `onSandUpdate` callback
+- Sand particles (falling terrain debris) now properly sync to all clients
+- Ensures accurate physics simulation across all players
+- Completes the server-authoritative physics system (terrain + sand + projectiles)
+
 **2025-10-05**: Server-authoritative terrain system + Singleplayer removal
 - Converted from "Player 1 Authority" to full server authority for terrain generation
 - Server generates terrain on startup using Terrain class with deterministic RNG (~200ms)
