@@ -132,6 +132,10 @@ class NetworkManager {
                 this.handleTerrainUpdate(msg);
                 break;
 
+            case 'sand_update':
+                this.handleSandUpdate(msg);
+                break;
+
             case 'projectile':
                 if (!this.engineReady) break;
                 this.handleProjectileMessage(msg);
@@ -316,6 +320,22 @@ class NetworkManager {
     handleTerrainUpdate(msg) {
         if (!this.engineReady) return;
         this.applyTerrainMods([msg]);
+    }
+
+    handleSandUpdate(msg) {
+        if (!this.engineReady || !msg) return;
+        if (msg.full) {
+            if (typeof this.engine.loadSandChunks === 'function') {
+                this.engine.loadSandChunks(msg);
+            }
+            return;
+        }
+
+        if (typeof this.engine.updateSandChunks === 'function') {
+            this.engine.updateSandChunks(msg);
+        } else if (typeof this.engine.loadSandChunks === 'function') {
+            this.engine.loadSandChunks(msg);
+        }
     }
 
     handleProjectileMessage(msg) {

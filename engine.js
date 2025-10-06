@@ -52,6 +52,7 @@ class GameEngine {
         this.projectiles = [];
         this.particles = [];
         this.inputManager = null;
+        this.onSandUpdate = null;
         this.playerChunkComputeRadius = 1;
         this.playerChunkBufferRadius = 2;
         this.maxComputedSandPriority = 1;
@@ -1101,10 +1102,11 @@ class GameEngine {
             return [];
         }
 
+        const affectedSandChunks = new Set();
         const chunks = this.terrain.destroy(wrappedX, y, radius);
 
         for (const chunkData of chunks) {
-            this.spawnSandFromPixels(chunkData, wrappedX, y, explosive);
+            this.spawnSandFromPixels(chunkData, wrappedX, y, explosive, affectedSandChunks);
         }
 
         if (broadcast && this.network && typeof this.network.sendTerrainDestruction === 'function') {
@@ -1115,10 +1117,17 @@ class GameEngine {
             this.onTerrainDestruction({ x: wrappedX, y, radius, explosive, broadcast });
         }
 
+        if (typeof this.onSandUpdate === 'function' && affectedSandChunks.size > 0) {
+            const sandPayload = this.serializeSandChunksForKeys(affectedSandChunks);
+            if (sandPayload) {
+                this.onSandUpdate(sandPayload);
+            }
+        }
+
         return chunks;
     }
 
-    spawnSandFromPixels(chunkData, originX, originY, explosive) {
+    spawnSandFromPixels(chunkData, originX, originY, explosive, affectedChunks = null) {
         if (!chunkData || !chunkData.pixels || chunkData.pixels.length === 0) {
             return;
         }
@@ -1172,6 +1181,9 @@ class GameEngine {
             const chunkX = Math.floor(wrappedX / this.chunkSize);
             const chunkY = Math.floor(px.y / this.chunkSize);
             this.addSandToChunk(sand, chunkX, chunkY);
+            if (affectedChunks) {
+                affectedChunks.add(`${chunkX}|${chunkY}`);
+            }
             this.sandParticleCount++;
             spawned++;
         }
@@ -1240,6 +1252,25 @@ class GameEngine {
         }
 
         return payload.chunks.length ? payload : null;
+    }
+
+    serializeSandChunksForKeys(keys) {
+        if (!keys || typeof keys[Symbol.iterator] !== 'function') return null;
+        const chunks = [];
+        for (const key of keys) {
+            const list = this.sandChunks.get(key);
+            if (!list || list.length === 0) continue;
+            chunks.push({
+                key,
+                particles: list.map(p => ({ x: p.x, y: p.y, material: p.material, color: p.color }))
+            });
+        }
+        if (chunks.length === 0) return null;
+        return {
+            chunkSize: this.chunkSize,
+            chunks,
+            full: false
+        };
     }
 
     clearSandChunks() {

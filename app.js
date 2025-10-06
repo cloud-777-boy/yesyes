@@ -98,6 +98,7 @@ class GameServer {
             if (broadcast === false) return;
             this.recordAndBroadcastTerrainModification(x, y, radius, explosive);
         };
+        this.engine.onSandUpdate = (payload) => this.broadcastSandUpdate(payload);
         this.terrainSnapshot = this.engine.getTerrainSnapshot();
         this.tick = this.engine.tick;
         const pixelLength = this.terrainSnapshot && this.terrainSnapshot.pixels
@@ -146,6 +147,19 @@ class GameServer {
             explosive,
             tick: mod.tick
         });
+
+        const terrainSnapshot = this.engine.getTerrainSnapshot();
+        if (terrainSnapshot) {
+            this.broadcast({
+                type: 'terrain_snapshot',
+                snapshot: terrainSnapshot
+            });
+        }
+
+        const fullSandSnapshot = this.engine.serializeSandChunks(false);
+        if (fullSandSnapshot) {
+            this.broadcastSandUpdate(fullSandSnapshot, true);
+        }
     }
     
     setupServer() {
@@ -425,6 +439,17 @@ class GameServer {
                 player.ws.send(data);
             }
         }
+    }
+
+    broadcastSandUpdate(payload, forceFull = false) {
+        if (!payload || !Array.isArray(payload.chunks) || payload.chunks.length === 0) return;
+        const message = {
+            type: 'sand_update',
+            chunkSize: payload.chunkSize,
+            chunks: payload.chunks,
+            full: forceFull || !!payload.full
+        };
+        this.broadcast(message);
     }
     
     sendToPlayer(playerId, message) {
