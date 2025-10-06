@@ -81,10 +81,11 @@ class GameServer {
         this.tickRate = 60;
         this.stateUpdateRate = 20;
         
-        // Sand update throttling
-        this.sandUpdateRate = 10; // Sand updates per second (reduced from state update rate)
+        // Sand update throttling with spatial filtering
+        this.sandUpdateRate = 20; // Increased to 20Hz since we only send nearby chunks
+        this.sandChunkRadius = 15; // Number of chunks around players to update
         this.lastSandUpdateTime = 0;
-        this.pendingSandUpdate = null;
+        this.hasPendingSandUpdate = false;
         
         this.startTime = Date.now();
         this.totalMessages = 0;
@@ -103,10 +104,10 @@ class GameServer {
             if (broadcast === false) return;
             this.recordAndBroadcastTerrainModification(x, y, radius, explosive);
         };
-        // Throttle sand updates to prevent memory leak
+        // Mark that sand updates are pending but don't store stale data
         this.engine.onSandUpdate = (payload) => {
-            // Store the latest sand update instead of broadcasting immediately
-            this.pendingSandUpdate = payload;
+            // Just flag that we have pending sand updates
+            this.hasPendingSandUpdate = true;
         };
         this.terrainSnapshot = this.engine.getTerrainSnapshot();
         this.tick = this.engine.tick;
@@ -455,8 +456,8 @@ class GameServer {
     }
 
     broadcastPendingSandUpdate() {
-        // Only broadcast if we have pending sand updates and enough time has passed
-        if (!this.pendingSandUpdate || !this.engine) return;
+        // Only broadcast when there are actual pending sand updates
+        if (!this.hasPendingSandUpdate || !this.engine) return;
         
         const now = Date.now();
         const timeSinceLastUpdate = now - this.lastSandUpdateTime;
@@ -466,21 +467,24 @@ class GameServer {
             return;
         }
         
-        // Get fresh sand data but only for active chunks
-        const sandUpdate = this.engine.serializeSandChunks(true);
-        if (sandUpdate && sandUpdate.chunks && sandUpdate.chunks.length > 0) {
-            const message = {
-                type: 'sand_update',
-                chunkSize: sandUpdate.chunkSize,
-                chunks: sandUpdate.chunks,
-                full: false
-            };
-            this.broadcast(message);
-            this.lastSandUpdateTime = now;
+        // Only broadcast sand chunks near players for efficiency
+        if (this.engine.sandParticleCount > 0 && this.engine.players.size > 0) {
+            // Get sand data only for chunks near players
+            const sandUpdate = this.engine.serializeSandChunksNearPlayers(this.sandChunkRadius);
+            if (sandUpdate && sandUpdate.chunks && sandUpdate.chunks.length > 0) {
+                const message = {
+                    type: 'sand_update',
+                    chunkSize: sandUpdate.chunkSize,
+                    chunks: sandUpdate.chunks,
+                    full: false
+                };
+                this.broadcast(message);
+                this.lastSandUpdateTime = now;
+            }
         }
         
-        // Clear pending update
-        this.pendingSandUpdate = null;
+        // Clear pending update flag
+        this.hasPendingSandUpdate = false;
     }
     
     broadcastSandUpdate(payload, forceFull = false) {

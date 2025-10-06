@@ -46,8 +46,9 @@ class GameServer {
         this.tickRate = 60; // Server updates per second
         this.stateUpdateRate = 20; // State broadcasts per second
         
-        // Sand update throttling to prevent memory leak
-        this.sandUpdateRate = 10; // Sand updates per second (reduced from state update rate)
+        // Sand update throttling with spatial filtering
+        this.sandUpdateRate = 20; // Increased to 20Hz since we only send nearby chunks
+        this.sandChunkRadius = 15; // Number of chunks around players to update
         this.lastSandUpdateTime = 0;
         this.hasPendingSandUpdate = false;
         
@@ -423,8 +424,8 @@ class GameServer {
     }
 
     broadcastPendingSandUpdate() {
-        // Always check for sand particles and broadcast if they exist
-        if (!this.engine) return;
+        // Only broadcast when there are actual pending sand updates
+        if (!this.hasPendingSandUpdate || !this.engine) return;
         
         const now = Date.now();
         const timeSinceLastUpdate = now - this.lastSandUpdateTime;
@@ -434,10 +435,10 @@ class GameServer {
             return;
         }
         
-        // Always check for sand particles, not just when flagged
-        if (this.engine.sandParticleCount > 0) {
-            // Get fresh sand data with current version numbers
-            const sandUpdate = this.engine.serializeSandChunks(false); // Use delta updates
+        // Only broadcast sand chunks near players for efficiency
+        if (this.engine.sandParticleCount > 0 && this.engine.players.size > 0) {
+            // Get sand data only for chunks near players
+            const sandUpdate = this.engine.serializeSandChunksNearPlayers(this.sandChunkRadius);
             if (sandUpdate && sandUpdate.chunks && sandUpdate.chunks.length > 0) {
                 const message = {
                     type: 'sand_update',
@@ -445,7 +446,6 @@ class GameServer {
                     chunks: sandUpdate.chunks,
                     full: sandUpdate.full || false
                 };
-                //console.log(`[DEBUG] Broadcasting sand update: ${sandUpdate.chunks.length} chunks, particles=${this.engine.sandParticleCount}`);
                 this.broadcast(message);
                 this.lastSandUpdateTime = now;
             }

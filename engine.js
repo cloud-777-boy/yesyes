@@ -1214,6 +1214,47 @@ class GameEngine {
         }
     }
 
+    serializeSandChunksNearPlayers(chunkRadius = 15) {
+        const payload = {
+            chunkSize: this.chunkSize,
+            chunks: [],
+            full: false
+        };
+
+        if (this.players.size === 0) {
+            return null;
+        }
+
+        const relevantChunks = new Set();
+        
+        for (const player of this.players.values()) {
+            const playerChunkX = Math.floor(player.x / this.chunkSize);
+            const playerChunkY = Math.floor(player.y / this.chunkSize);
+            
+            for (let dy = -chunkRadius; dy <= chunkRadius; dy++) {
+                for (let dx = -chunkRadius; dx <= chunkRadius; dx++) {
+                    const chunkX = playerChunkX + dx;
+                    const chunkY = playerChunkY + dy;
+                    if (chunkY >= 0 && chunkY < Math.ceil(this.height / this.chunkSize)) {
+                        const wrappedChunkX = ((chunkX % Math.ceil(this.width / this.chunkSize)) + Math.ceil(this.width / this.chunkSize)) % Math.ceil(this.width / this.chunkSize);
+                        relevantChunks.add(`${wrappedChunkX}|${chunkY}`);
+                    }
+                }
+            }
+        }
+
+        for (const key of relevantChunks) {
+            const list = this.sandChunks.get(key);
+            if (!list || list.length === 0) continue;
+            payload.chunks.push({
+                key,
+                particles: list.map(p => ({ x: p.x, y: p.y, material: p.material, color: p.color }))
+            });
+        }
+
+        return payload.chunks.length > 0 ? payload : null;
+    }
+
     serializeSandChunks(activeOnly = false) {
         const payload = {
             chunkSize: this.chunkSize,
