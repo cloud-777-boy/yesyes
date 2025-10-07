@@ -31,6 +31,7 @@ class GameEngine {
         this.terrain = null;
         this.chunkSize = 256;
         this.sandChunks = new Map();
+        this.dirtySandChunkKeys = new Set();
         this.sandParticleCount = 0;
         this.sandPool = [];
         this.sandOccupancy = new Set();
@@ -47,6 +48,7 @@ class GameEngine {
         this.maxSandUpdatesPerFrame = 900;
         this.maxSandSpawnPerDestroy = 500;
         this.sandAdaptiveCursor = 0;
+        this.sandChunkBroadcastRadius = 6;
         this.players = new Map();
         this.playerList = [];
         this.projectiles = [];
@@ -133,6 +135,7 @@ class GameEngine {
             };
         }
         this.sandChunks.clear();
+        this.dirtySandChunkKeys.clear();
         this.sandParticleCount = 0;
         this.sandAdaptiveCursor = 0;
         this.sandPool.length = 0;
@@ -496,12 +499,14 @@ class GameEngine {
         sand.chunkIndex = list.length;
         list.push(sand);
         sand.chunkIndex = list.length - 1;
+        this.markSandChunkDirty(chunkKey);
         return list;
     }
 
     removeSandFromChunk(sand) {
         if (!sand.chunkKey) return;
-        const list = this.sandChunks.get(sand.chunkKey);
+        const chunkKey = sand.chunkKey;
+        const list = this.sandChunks.get(chunkKey);
         if (!list || list.length === 0) {
             sand.chunkKey = null;
             sand.chunkIndex = -1;
@@ -514,12 +519,13 @@ class GameEngine {
             last.chunkIndex = index;
         }
         if (list.length === 0) {
-            this.sandChunks.delete(sand.chunkKey);
+            this.sandChunks.delete(chunkKey);
         }
         sand.chunkX = -1;
         sand.chunkY = -1;
         sand.chunkKey = null;
         sand.chunkIndex = -1;
+        this.markSandChunkDirty(chunkKey);
     }
 
     moveSandToChunk(sand, newChunkX, newChunkY) {
@@ -886,12 +892,14 @@ class GameEngine {
         if (candidateCount === 0) {
             this.sandAdaptiveCursor = 0;
             this.pruneDeadSand();
+            this.flushDirtySandChunks();
             return;
         }
 
         const updates = Math.min(candidateCount, this.maxSandUpdatesPerFrame);
         if (updates === 0) {
             this.pruneDeadSand();
+            this.flushDirtySandChunks();
             return;
         }
 
@@ -902,14 +910,25 @@ class GameEngine {
             const idx = (this.sandAdaptiveCursor + processed) % candidateCount;
             const sand = candidates[idx];
             if (!sand.dead) {
+                const prevX = sand.x;
+                const prevY = sand.y;
+                const prevChunkKey = sand.chunkKey;
                 sand.update(this, occupancy, dt, occupancyMap);
                 sand.nextUpdateTick = tick + sand.updateInterval;
-                const newChunkX = Math.floor(sand.x / chunkSize);
-                let newChunkY = Math.floor(sand.y / chunkSize);
-                newChunkY = Math.max(0, Math.min(totalChunksY - 1, newChunkY));
-                const wrappedChunkX = ((newChunkX % totalChunksX) + totalChunksX) % totalChunksX;
-                if (sand.chunkX !== wrappedChunkX || sand.chunkY !== newChunkY) {
-                    this.moveSandToChunk(sand, wrappedChunkX, newChunkY);
+                if (sand.dead) {
+                    if (prevChunkKey) {
+                        this.markSandChunkDirty(prevChunkKey);
+                    }
+                } else {
+                    const newChunkX = Math.floor(sand.x / chunkSize);
+                    let newChunkY = Math.floor(sand.y / chunkSize);
+                    newChunkY = Math.max(0, Math.min(totalChunksY - 1, newChunkY));
+                    const wrappedChunkX = ((newChunkX % totalChunksX) + totalChunksX) % totalChunksX;
+                    if (sand.chunkX !== wrappedChunkX || sand.chunkY !== newChunkY) {
+                        this.moveSandToChunk(sand, wrappedChunkX, newChunkY);
+                    } else if ((sand.x !== prevX || sand.y !== prevY) && prevChunkKey) {
+                        this.markSandChunkDirty(prevChunkKey);
+                    }
                 }
             }
             processed++;
@@ -918,6 +937,7 @@ class GameEngine {
         this.sandAdaptiveCursor = (this.sandAdaptiveCursor + updates) % candidateCount;
 
         this.pruneDeadSand();
+        this.flushDirtySandChunks();
     }
 
     pruneDeadSand() {
@@ -934,6 +954,7 @@ class GameEngine {
             if (!list.length) {
                 const key = this.activeSandChunkKeys[i];
                 this.sandChunks.delete(key);
+                this.markSandChunkDirty(key);
             }
         }
 
@@ -1134,11 +1155,8 @@ class GameEngine {
             this.onTerrainDestruction({ x: wrappedX, y, radius, explosive, broadcast });
         }
 
-        if (typeof this.onSandUpdate === 'function' && affectedSandChunks.size > 0) {
-            const sandPayload = this.serializeSandChunksForKeys(affectedSandChunks);
-            if (sandPayload) {
-                this.onSandUpdate(sandPayload);
-            }
+        if (affectedSandChunks.size > 0) {
+            this.flushDirtySandChunks(affectedSandChunks);
         }
 
         return chunks;
@@ -1231,6 +1249,135 @@ class GameEngine {
         }
     }
 
+    markSandChunkDirty(key) {
+        if (key === null || key === undefined) return;
+        const normalizedKey = typeof key === 'string' ? key : String(key);
+        if (!normalizedKey || normalizedKey.length === 0) return;
+        this.dirtySandChunkKeys.add(normalizedKey);
+    }
+
+    clearDirtySandChunks(keys = null) {
+        if (!keys) {
+            this.dirtySandChunkKeys.clear();
+            return;
+        }
+        if (typeof keys[Symbol.iterator] !== 'function') {
+            const normalizedKey = typeof keys === 'string' ? keys : String(keys);
+            this.dirtySandChunkKeys.delete(normalizedKey);
+            return;
+        }
+        for (const key of keys) {
+            if (key === null || key === undefined) continue;
+            const normalizedKey = typeof key === 'string' ? key : String(key);
+            this.dirtySandChunkKeys.delete(normalizedKey);
+        }
+    }
+
+    flushDirtySandChunks(additionalKeys = null) {
+        if (additionalKeys && typeof additionalKeys[Symbol.iterator] === 'function') {
+            for (const key of additionalKeys) {
+                this.markSandChunkDirty(key);
+            }
+        }
+
+        if (this.dirtySandChunkKeys.size === 0) {
+            return;
+        }
+
+        const broadcastKeys = this.filterSandChunkKeysForBroadcast(this.dirtySandChunkKeys);
+        if (!broadcastKeys || broadcastKeys.length === 0) {
+            return;
+        }
+
+        if (typeof this.onSandUpdate === 'function') {
+            const payload = this.serializeSandChunksForKeys(broadcastKeys);
+            if (payload) {
+                this.onSandUpdate(payload);
+            }
+        }
+
+        this.clearDirtySandChunks(broadcastKeys);
+    }
+
+    filterSandChunkKeysForBroadcast(keys) {
+        if (!keys || typeof keys[Symbol.iterator] !== 'function') {
+            return [];
+        }
+
+        if (this.players.size === 0) {
+            return Array.from(keys);
+        }
+
+        const chunkSize = this.chunkSize;
+        const totalChunksX = Math.ceil(this.width / chunkSize);
+        const maxChunkY = Math.ceil(this.height / chunkSize) - 1;
+        const configuredRadius = typeof this.sandChunkBroadcastRadius === 'number'
+            ? Math.floor(this.sandChunkBroadcastRadius)
+            : NaN;
+        const fallbackRadius = this.playerChunkBufferRadius + this.playerChunkComputeRadius + 2;
+        const radius = Math.max(1, Number.isFinite(configuredRadius) ? configuredRadius : fallbackRadius);
+
+        const players = [];
+        for (const player of this.players.values()) {
+            if (!player) continue;
+            let chunkX = Math.floor(player.x / chunkSize);
+            let chunkY = Math.floor(player.y / chunkSize);
+            if (!Number.isFinite(chunkX) || !Number.isFinite(chunkY)) continue;
+            chunkY = Math.max(0, Math.min(maxChunkY, chunkY));
+            chunkX = ((chunkX % totalChunksX) + totalChunksX) % totalChunksX;
+            players.push({ x: chunkX, y: chunkY });
+        }
+
+        if (players.length === 0) {
+            return Array.from(keys);
+        }
+
+        const broadcast = [];
+
+        for (const key of keys) {
+            if (key === null || key === undefined) continue;
+            const parts = typeof key === 'string' ? key.split('|') : String(key).split('|');
+            if (parts.length !== 2) continue;
+            let chunkX = parseInt(parts[0], 10);
+            let chunkY = parseInt(parts[1], 10);
+            if (Number.isNaN(chunkX) || Number.isNaN(chunkY)) continue;
+            chunkY = Math.max(0, Math.min(maxChunkY, chunkY));
+            chunkX = ((chunkX % totalChunksX) + totalChunksX) % totalChunksX;
+            for (let i = 0; i < players.length; i++) {
+                const playerChunk = players[i];
+                const wrappedDeltaX = this.getWrappedChunkDelta(chunkX, playerChunk.x, totalChunksX);
+                const deltaY = chunkY - playerChunk.y;
+                if (Math.abs(wrappedDeltaX) <= radius && Math.abs(deltaY) <= radius) {
+                    broadcast.push(`${chunkX}|${chunkY}`);
+                    break;
+                }
+            }
+        }
+
+        if (broadcast.length <= 1) {
+            return broadcast;
+        }
+
+        const unique = new Set(broadcast);
+        return Array.from(unique);
+    }
+
+    getWrappedChunkDelta(a, b, total) {
+        if (typeof shortestWrappedDelta === 'function') {
+            return shortestWrappedDelta(a, b, total);
+        }
+        if (!Number.isFinite(total) || total <= 0) {
+            return a - b;
+        }
+        let delta = a - b;
+        if (delta > total / 2) {
+            delta -= total;
+        } else if (delta < -total / 2) {
+            delta += total;
+        }
+        return delta;
+    }
+
     serializeSandChunksNearPlayers(chunkRadius = 15) {
         const payload = {
             chunkSize: this.chunkSize,
@@ -1316,10 +1463,18 @@ class GameEngine {
         if (!keys || typeof keys[Symbol.iterator] !== 'function') return null;
         const chunks = [];
         for (const key of keys) {
-            const list = this.sandChunks.get(key);
-            if (!list || list.length === 0) continue;
+            if (key === null || key === undefined) continue;
+            const normalizedKey = typeof key === 'string' ? key : String(key);
+            const list = this.sandChunks.get(normalizedKey);
+            if (!list || list.length === 0) {
+                chunks.push({
+                    key: normalizedKey,
+                    particles: []
+                });
+                continue;
+            }
             chunks.push({
-                key,
+                key: normalizedKey,
                 particles: list.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, material: p.material, color: p.color }))
             });
         }
@@ -1349,6 +1504,7 @@ class GameEngine {
         const list = this.sandChunks.get(key);
         if (!list || list.length === 0) {
             this.sandChunks.delete(key);
+            this.markSandChunkDirty(key);
             return;
         }
 
@@ -1359,6 +1515,7 @@ class GameEngine {
 
         this.sandParticleCount = Math.max(0, this.sandParticleCount - count);
         this.sandChunks.delete(key);
+        this.markSandChunkDirty(key);
     }
 
     applySandSnapshot(snapshot, replaceAll = false) {
