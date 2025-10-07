@@ -80,6 +80,7 @@ class GameServer {
         this.maxTerrainChunkBroadcast = 128;
         this.terrainChunkDiffCounter = 0;
         this.playerCounter = 0;
+        this.projectileCounter = 0;
         this.seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
         this.random = DeterministicRandom ? new DeterministicRandom(this.seed) : null;
         this.engine = null;
@@ -89,10 +90,19 @@ class GameServer {
         
         // Sand update throttling with spatial filtering
         this.sandUpdateRate = 20; // Increased to 20Hz since we only send nearby chunks
-        this.sandChunkRadius = 15; // Number of chunks around players to update
+        this.sandChunkRadius = 0; // Radius recalculated once engine is initialized
         this.lastSandUpdateTime = 0;
         this.hasPendingSandUpdate = false;
-        
+
+        // Targeted chunk resynchronization
+        this.chunkSyncRadius = 1; // Stream player chunk plus immediate neighbours
+        this.playerActiveChunks = new Map();
+        this.pendingChunkResync = new Map();
+        this.chunkSubscribers = new Map();
+        this.chunkVersions = new Map();
+        this.playerChunkVersions = new Map();
+        this.maxChunkSyncPerTick = 4;
+
         this.startTime = Date.now();
         this.totalMessages = 0;
 
@@ -104,7 +114,15 @@ class GameServer {
     initializeEngine() {
         console.log(`[${new Date().toISOString()}] Generating server terrain with seed: ${this.seed}`);
         this.engine = new GameEngine(null, true, { seed: this.seed });
+
+        const serverComputeRadius = 1;
+        const serverBufferRadius = 1;
+        this.engine.playerChunkComputeRadius = serverComputeRadius;
+        this.engine.playerChunkBufferRadius = serverBufferRadius;
+        this.engine.sandChunkBroadcastRadius = Math.max(1, serverComputeRadius + serverBufferRadius);
+
         this.engine.init();
+        this.sandChunkRadius = Math.max(1, serverComputeRadius + serverBufferRadius);
         this.engine.onProjectileSpawn = (projectile) => this.handleServerProjectileSpawn(projectile);
         this.engine.onTerrainDestruction = ({ x, y, radius, explosive, broadcast }) => {
             if (broadcast === false) return;
@@ -113,6 +131,12 @@ class GameServer {
         // IMMEDIATE REAL-TIME SAND BROADCAST - NO THROTTLING
         this.engine.onSandUpdate = (payload) => {
             if (payload && payload.chunks && payload.chunks.length > 0) {
+                const keys = payload.chunks
+                    .map((chunk) => (chunk && typeof chunk.key === 'string') ? chunk.key : null)
+                    .filter((key) => key);
+                if (keys.length) {
+                    this.queueChunkResyncForKeys(keys, true);
+                }
                 this.broadcast({
                     type: 'sand_update',
                     chunkSize: payload.chunkSize,
@@ -132,8 +156,12 @@ class GameServer {
 
     handleServerProjectileSpawn(projectile) {
         if (!projectile) return;
+        if (!projectile.serverId) {
+            projectile.serverId = this.generateProjectileId();
+        }
         const payload = {
             type: 'projectile',
+            id: projectile.serverId,
             x: projectile.x,
             y: projectile.y,
             vx: projectile.vx,
@@ -162,31 +190,54 @@ class GameServer {
         if (this.pendingTerrainBroadcasts.length > this.maxTerrainModBroadcast) {
             this.pendingTerrainBroadcasts.splice(0, this.pendingTerrainBroadcasts.length - this.maxTerrainModBroadcast);
         }
-        this.broadcast({
+
+        const terrainUpdate = {
             type: 'terrain_update',
             x,
             y,
             radius,
             explosive,
             tick: mod.tick
-        });
+        };
+        this.broadcast(terrainUpdate);
 
-        this.captureTerrainChunkDiff(mod.tick);
+        const diff = this.captureTerrainChunkDiff(mod.tick);
+        if (diff && Array.isArray(diff.chunks) && diff.chunks.length) {
+            const diffPayload = {
+                type: 'terrain_chunk_update',
+                chunkDiff: diff
+            };
+            this.broadcast(diffPayload);
+
+            const keys = diff.chunks
+                .map((chunk) => (chunk && typeof chunk.key === 'string') ? chunk.key : null)
+                .filter((key) => key);
+            if (keys.length) {
+                const terrainSnapshot = this.engine.serializeTerrainChunksForKeys(keys);
+                if (terrainSnapshot && Array.isArray(terrainSnapshot.chunks) && terrainSnapshot.chunks.length > 0) {
+                    this.broadcast({
+                        type: 'chunk_sync',
+                        terrain: terrainSnapshot
+                    });
+                }
+                this.queueChunkResyncForKeys(keys, true);
+            }
+        }
     }
 
     captureTerrainChunkDiff(tick = this.tick) {
         if (!this.engine || !this.engine.terrain || typeof this.engine.terrain.getModifications !== 'function') {
-            return;
+            return null;
         }
 
         const diff = this.engine.terrain.getModifications();
         if (!diff || !Array.isArray(diff.chunks) || diff.chunks.length === 0) {
-            return;
+            return null;
         }
 
         const sanitized = this.sanitizeTerrainChunkDiff(diff, tick);
         if (!sanitized || sanitized.chunks.length === 0) {
-            return;
+            return null;
         }
 
         this.pendingTerrainChunkDiffs.push(sanitized);
@@ -198,6 +249,8 @@ class GameServer {
         if (this.terrainChunkHistory.length > this.maxTerrainChunkHistory) {
             this.refreshTerrainSnapshot(true);
         }
+
+        return sanitized;
     }
 
     sanitizeTerrainChunkDiff(diff, tick) {
@@ -228,6 +281,248 @@ class GameServer {
         }
 
         return sanitized;
+    }
+
+    ensurePlayerVersionMap(playerId) {
+        let versionMap = this.playerChunkVersions.get(playerId);
+        if (!versionMap) {
+            versionMap = new Map();
+            this.playerChunkVersions.set(playerId, versionMap);
+        }
+        return versionMap;
+    }
+
+    subscribePlayerToChunk(key, playerId) {
+        if (!key || !playerId) return;
+        const normalizedKey = String(key);
+        this.ensurePlayerVersionMap(playerId);
+        let subscribers = this.chunkSubscribers.get(normalizedKey);
+        if (!subscribers) {
+            subscribers = new Set();
+            this.chunkSubscribers.set(normalizedKey, subscribers);
+        }
+        subscribers.add(playerId);
+        if (!this.chunkVersions.has(normalizedKey)) {
+            this.chunkVersions.set(normalizedKey, 1);
+        }
+    }
+
+    unsubscribePlayerFromChunk(key, playerId) {
+        if (!key || !playerId) return;
+        const normalizedKey = String(key);
+        const subscribers = this.chunkSubscribers.get(normalizedKey);
+        if (!subscribers) return;
+        subscribers.delete(playerId);
+        if (subscribers.size === 0) {
+            this.chunkSubscribers.delete(normalizedKey);
+        }
+        const queue = this.pendingChunkResync.get(playerId);
+        if (queue) {
+            queue.delete(normalizedKey);
+            if (queue.size === 0) {
+                this.pendingChunkResync.delete(playerId);
+            }
+        }
+        const versionMap = this.playerChunkVersions.get(playerId);
+        if (versionMap) {
+            versionMap.delete(normalizedKey);
+        }
+    }
+
+    markChunkVersion(key, bumpVersion) {
+        const current = this.chunkVersions.get(key) || 0;
+        if (bumpVersion) {
+            this.chunkVersions.set(key, current > 0 ? current + 1 : 1);
+        } else if (!this.chunkVersions.has(key)) {
+            this.chunkVersions.set(key, 1);
+        }
+    }
+
+    getChunkKeysAround(x, y, radius = this.chunkSyncRadius) {
+        const keys = new Set();
+        if (!this.engine || !Number.isFinite(x) || !Number.isFinite(y)) {
+            return keys;
+        }
+
+        const chunkSize = Math.max(1, this.engine.chunkSize || 1);
+        const width = Math.max(1, this.engine.width || 0);
+        const height = Math.max(1, this.engine.height || 0);
+        const totalChunksX = Math.max(1, Math.ceil(width / chunkSize));
+        const totalChunksY = Math.max(1, Math.ceil(height / chunkSize));
+
+        const normalizedX = typeof wrapHorizontal === 'function'
+            ? wrapHorizontal(x, width)
+            : (((x % width) + width) % width);
+        const clampedY = Math.max(0, Math.min(height - 1, y));
+        const centerChunkX = Math.floor(normalizedX / chunkSize);
+        const centerChunkY = Math.max(0, Math.min(totalChunksY - 1, Math.floor(clampedY / chunkSize)));
+
+        for (let dy = -radius; dy <= radius; dy++) {
+            const chunkY = centerChunkY + dy;
+            if (chunkY < 0 || chunkY >= totalChunksY) continue;
+            for (let dx = -radius; dx <= radius; dx++) {
+                let chunkX = centerChunkX + dx;
+                chunkX = ((chunkX % totalChunksX) + totalChunksX) % totalChunksX;
+                keys.add(`${chunkX}|${chunkY}`);
+            }
+        }
+
+        return keys;
+    }
+
+    queueChunksForPlayer(playerId, keys) {
+        if (!playerId || !keys) return;
+        const versionMap = this.ensurePlayerVersionMap(playerId);
+        let queue = this.pendingChunkResync.get(playerId);
+        if (!queue) {
+            queue = new Set();
+            this.pendingChunkResync.set(playerId, queue);
+        }
+        const iterable = (keys instanceof Set || Array.isArray(keys)) ? keys : [keys];
+        for (const key of iterable) {
+            if (!key) continue;
+            const normalizedKey = String(key);
+            queue.add(normalizedKey);
+            if (!versionMap.has(normalizedKey)) {
+                versionMap.set(normalizedKey, 0);
+            }
+            if (!this.chunkVersions.has(normalizedKey)) {
+                this.chunkVersions.set(normalizedKey, 1);
+            }
+        }
+    }
+
+    queueChunkResyncForKeys(keys, bumpVersion = false) {
+        if (!keys) return;
+        const keyList = Array.isArray(keys) ? keys : Array.from(keys);
+        if (!keyList.length) return;
+
+        for (let i = 0; i < keyList.length; i++) {
+            const rawKey = keyList[i];
+            if (!rawKey) continue;
+            const key = String(rawKey);
+            this.markChunkVersion(key, bumpVersion);
+            const subscribers = this.chunkSubscribers.get(key);
+            if (!subscribers || subscribers.size === 0) continue;
+            for (const playerId of subscribers) {
+                this.queueChunksForPlayer(playerId, [key]);
+            }
+        }
+    }
+
+    updatePlayerChunkTracking() {
+        if (!this.engine) return;
+        for (const playerId of this.players.keys()) {
+            const enginePlayer = this.engine.players ? this.engine.players.get(playerId) : null;
+            if (!enginePlayer) continue;
+            const keys = this.getChunkKeysAround(enginePlayer.x, enginePlayer.y, this.chunkSyncRadius);
+            const prev = this.playerActiveChunks.get(playerId) || new Set();
+
+            if (!keys.size) {
+                if (prev.size) {
+                    for (const key of prev) {
+                        this.unsubscribePlayerFromChunk(key, playerId);
+                    }
+                }
+                this.playerActiveChunks.set(playerId, new Set());
+                continue;
+            }
+
+            for (const key of prev) {
+                if (!keys.has(key)) {
+                    this.unsubscribePlayerFromChunk(key, playerId);
+                }
+            }
+
+            for (const key of keys) {
+                if (!prev.has(key)) {
+                    this.subscribePlayerToChunk(key, playerId);
+                    this.queueChunksForPlayer(playerId, [key]);
+                }
+            }
+
+            this.playerActiveChunks.set(playerId, keys);
+        }
+    }
+
+    getChunkKeyForPosition(x, y) {
+        if (!this.engine || !Number.isFinite(x) || !Number.isFinite(y)) {
+            return null;
+        }
+
+        const chunkSize = Math.max(1, this.engine.chunkSize || 1);
+        const width = Math.max(1, this.engine.width || 0);
+        const height = Math.max(1, this.engine.height || 0);
+        if (!width || !height) {
+            return null;
+        }
+
+        const normalizedX = typeof wrapHorizontal === 'function'
+            ? wrapHorizontal(x, width)
+            : (((x % width) + width) % width);
+        const clampedY = Math.max(0, Math.min(height - 1, y));
+
+        const chunkX = Math.floor(normalizedX / chunkSize);
+        const chunkY = Math.floor(clampedY / chunkSize);
+
+        return `${chunkX}|${chunkY}`;
+    }
+
+    flushPendingChunkResyncs() {
+        if (!this.engine || this.pendingChunkResync.size === 0) return;
+
+        for (const [playerId, keySet] of this.pendingChunkResync.entries()) {
+            if (!keySet || keySet.size === 0) continue;
+            const versionMap = this.ensurePlayerVersionMap(playerId);
+            const keysToSend = [];
+
+            for (const key of keySet) {
+                const version = this.chunkVersions.get(key) || 0;
+                if (version <= 0) {
+                    keySet.delete(key);
+                    continue;
+                }
+                const playerVersion = versionMap.get(key) || 0;
+                if (playerVersion >= version) {
+                    keySet.delete(key);
+                    continue;
+                }
+                keysToSend.push(key);
+                if (keysToSend.length >= this.maxChunkSyncPerTick) {
+                    break;
+                }
+            }
+
+            if (!keysToSend.length) continue;
+
+            const terrainSnapshot = this.engine.serializeTerrainChunksForKeys(keysToSend);
+            const sandSnapshot = this.engine.serializeSandChunksForKeys(keysToSend);
+            const hasTerrain = terrainSnapshot && Array.isArray(terrainSnapshot.chunks) && terrainSnapshot.chunks.length > 0;
+            const hasSand = sandSnapshot && Array.isArray(sandSnapshot.chunks) && sandSnapshot.chunks.length > 0;
+
+            if (hasTerrain || hasSand) {
+                const payload = { type: 'chunk_sync' };
+
+                if (hasTerrain) {
+                    payload.terrain = terrainSnapshot;
+                }
+                if (hasSand) {
+                    payload.sandChunks = sandSnapshot;
+                }
+
+                this.sendToPlayer(playerId, payload);
+            }
+
+            for (const key of keysToSend) {
+                const version = this.chunkVersions.get(key) || 0;
+                versionMap.set(key, version);
+                keySet.delete(key);
+            }
+
+            if (keySet.size === 0) {
+                this.pendingChunkResync.delete(playerId);
+            }
+        }
     }
 
     refreshTerrainSnapshot(preservePendingDiffs = false) {
@@ -295,6 +590,18 @@ class GameServer {
                 if (enginePlayer) {
                     enginePlayer.alive = true;
                 }
+            }
+
+            const referenceX = enginePlayer ? enginePlayer.x : spawnX;
+            const referenceY = enginePlayer ? enginePlayer.y : spawnY;
+            const initialChunks = this.getChunkKeysAround(referenceX, referenceY, this.chunkSyncRadius);
+            if (initialChunks && initialChunks.size) {
+                this.playerActiveChunks.set(playerId, initialChunks);
+                this.ensurePlayerVersionMap(playerId);
+                for (const key of initialChunks) {
+                    this.subscribePlayerToChunk(key, playerId);
+                }
+                this.queueChunksForPlayer(playerId, initialChunks);
             }
 
             const welcomePayload = {
@@ -368,7 +675,17 @@ class GameServer {
                 if (this.engine && typeof this.engine.removePlayer === 'function') {
                     this.engine.removePlayer(playerId);
                 }
-                
+
+                const activeChunks = this.playerActiveChunks.get(playerId);
+                if (activeChunks && activeChunks.size) {
+                    for (const key of activeChunks) {
+                        this.unsubscribePlayerFromChunk(key, playerId);
+                    }
+                }
+                this.playerActiveChunks.delete(playerId);
+                this.pendingChunkResync.delete(playerId);
+                this.playerChunkVersions.delete(playerId);
+
                 this.broadcast({
                     type: 'player_left',
                     playerId
@@ -456,6 +773,9 @@ class GameServer {
             clientProjectileId: msg.clientProjectileId || null
         });
         if (projectile) {
+            if (!projectile.serverId) {
+                projectile.serverId = this.generateProjectileId();
+            }
             // Immediately run an authoritative update step to resolve collisions
             const dt = this.engine.fixedTimeStep || (1000 / this.tickRate);
             projectile.update(dt, this.engine);
@@ -496,9 +816,11 @@ class GameServer {
         this.engine.tick += 1;
         this.tick = this.engine.tick;
     }
-    
+
     broadcastState() {
         if (!this.engine) return;
+
+        this.updatePlayerChunkTracking();
 
         const players = this.engine.playerList.map((player) => ({
             id: player.id,
@@ -510,10 +832,12 @@ class GameServer {
             alive: player.alive,
             aimAngle: player.aimAngle,
             selectedSpell: player.selectedSpell,
-            lastProcessedInput: this.players.get(player.id)?.lastInputSequence || 0
+            lastProcessedInput: this.players.get(player.id)?.lastInputSequence || 0,
+            chunkKey: this.getChunkKeyForPosition(player.x, player.y)
         }));
 
         const projectiles = this.engine.projectiles.map((proj) => ({
+            id: proj.serverId || null,
             x: proj.x,
             y: proj.y,
             vx: proj.vx,
@@ -539,7 +863,8 @@ class GameServer {
             players,
             projectiles,
             terrainMods,
-            terrainSnapshotTick: this.terrainSnapshotTick
+            terrainSnapshotTick: this.terrainSnapshotTick,
+            serverStats: this.getServerStats()
         };
 
         if (terrainChunkDiffs.length) {
@@ -551,9 +876,17 @@ class GameServer {
 
         this.broadcast(state);
 
+        this.flushPendingChunkResyncs();
+
         if (this.terrainModifications.length > this.maxTerrainModHistory) {
             this.terrainModifications = this.terrainModifications.slice(-this.maxTerrainModHistory);
         }
+    }
+
+    generateProjectileId() {
+        this.projectileCounter = (this.projectileCounter + 1) >>> 0;
+        const suffix = this.projectileCounter.toString(36).padStart(4, '0');
+        return `proj-${Date.now().toString(36)}-${suffix}`;
     }
     
     broadcast(message, excludePlayerId = null) {
@@ -565,6 +898,31 @@ class GameServer {
                 player.ws.send(data);
             }
         }
+    }
+
+    getServerStats() {
+        if (!this.engine) {
+            return {
+                players: this.players.size,
+                sand: 0,
+                projectiles: 0,
+                tick: this.tick
+            };
+        }
+
+        const sandCount = Number.isFinite(this.engine.sandParticleCount)
+            ? this.engine.sandParticleCount
+            : 0;
+        const projectileCount = Array.isArray(this.engine.projectiles)
+            ? this.engine.projectiles.length
+            : 0;
+
+        return {
+            players: this.players.size,
+            sand: sandCount,
+            projectiles: projectileCount,
+            tick: this.tick
+        };
     }
 
     broadcastPendingSandUpdate() {
@@ -583,6 +941,12 @@ class GameServer {
             // Get sand data only for chunks near players
             const sandUpdate = this.engine.serializeSandChunksNearPlayers(this.sandChunkRadius);
             if (sandUpdate && sandUpdate.chunks && sandUpdate.chunks.length > 0) {
+                const keys = sandUpdate.chunks
+                    .map((chunk) => (chunk && typeof chunk.key === 'string') ? chunk.key : null)
+                    .filter((key) => key);
+                if (keys.length) {
+                    this.queueChunkResyncForKeys(keys, true);
+                }
                 const message = {
                     type: 'sand_update',
                     chunkSize: sandUpdate.chunkSize,

@@ -884,6 +884,106 @@ class Terrain {
         }
     }
 
+    serializeChunksForKeys(keys) {
+        if (!keys || typeof keys[Symbol.iterator] !== 'function') return null;
+        const chunkSize = this.chunkSize;
+        const totalChunksX = Math.max(1, Math.ceil(this.width / chunkSize));
+        const totalChunksY = Math.max(1, Math.ceil(this.height / chunkSize));
+        const chunks = [];
+
+        for (const key of keys) {
+            if (key === null || key === undefined) continue;
+            const normalizedKey = typeof key === 'string' ? key : String(key);
+            const parts = normalizedKey.split('|');
+            if (parts.length !== 2) continue;
+
+            let chunkX = parseInt(parts[0], 10);
+            let chunkY = parseInt(parts[1], 10);
+            if (Number.isNaN(chunkX) || Number.isNaN(chunkY)) continue;
+
+            chunkX = ((chunkX % totalChunksX) + totalChunksX) % totalChunksX;
+            chunkY = Math.max(0, Math.min(totalChunksY - 1, chunkY));
+
+            const buffer = new Uint8Array(chunkSize * chunkSize);
+
+            for (let localY = 0; localY < chunkSize; localY++) {
+                const worldY = chunkY * chunkSize + localY;
+                if (worldY < 0 || worldY >= this.height) continue;
+                for (let localX = 0; localX < chunkSize; localX++) {
+                    const worldX = chunkX * chunkSize + localX;
+                    const wrappedX = Math.floor(wrapHorizontal(worldX, this.width));
+                    const index = worldY * this.width + wrappedX;
+                    buffer[localY * chunkSize + localX] = this.pixels[index];
+                }
+            }
+
+            chunks.push({
+                key: `${chunkX}|${chunkY}`,
+                data: encodeBytesToBase64(buffer)
+            });
+        }
+
+        return chunks.length ? { chunkSize, chunks } : null;
+    }
+
+    applyChunkSnapshots(snapshot) {
+        if (!snapshot || typeof snapshot !== 'object') return;
+        const chunkSize = snapshot.chunkSize || this.chunkSize;
+        this.setChunkSize(chunkSize);
+        const entries = Array.isArray(snapshot.chunks) ? snapshot.chunks : [];
+        if (!entries.length) return;
+
+        const expectedLength = chunkSize * chunkSize;
+        const totalChunksX = Math.max(1, Math.ceil(this.width / chunkSize));
+        const totalChunksY = Math.max(1, Math.ceil(this.height / chunkSize));
+        this.suppressModificationTracking = true;
+        let dirtyMinX = Infinity;
+        let dirtyMinY = Infinity;
+        let dirtyMaxX = -Infinity;
+        let dirtyMaxY = -Infinity;
+
+        for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i];
+            if (!entry || !entry.key) continue;
+            const parts = String(entry.key).split('|');
+            if (parts.length !== 2) continue;
+
+            let chunkX = parseInt(parts[0], 10);
+            let chunkY = parseInt(parts[1], 10);
+            if (Number.isNaN(chunkX) || Number.isNaN(chunkY)) continue;
+
+            chunkX = ((chunkX % totalChunksX) + totalChunksX) % totalChunksX;
+            chunkY = Math.max(0, Math.min(totalChunksY - 1, chunkY));
+
+            const dataString = entry.data;
+            if (typeof dataString !== 'string' || dataString.length === 0) continue;
+            const decoded = decodeBase64ToBytes(dataString, expectedLength);
+            if (!decoded || decoded.length < expectedLength) continue;
+
+            for (let localIndex = 0; localIndex < expectedLength; localIndex++) {
+                const material = decoded[localIndex];
+                const localX = localIndex % chunkSize;
+                const localY = Math.floor(localIndex / chunkSize);
+                const worldX = chunkX * chunkSize + localX;
+                const worldY = chunkY * chunkSize + localY;
+                if (worldY < 0 || worldY >= this.height) continue;
+                const wrappedX = Math.floor(wrapHorizontal(worldX, this.width));
+                const previousMaterial = this.pixels[worldY * this.width + wrappedX];
+                if (previousMaterial === material) continue;
+                this.setPixel(wrappedX, worldY, material);
+                if (wrappedX < dirtyMinX) dirtyMinX = wrappedX;
+                if (wrappedX > dirtyMaxX) dirtyMaxX = wrappedX;
+                if (worldY < dirtyMinY) dirtyMinY = worldY;
+                if (worldY > dirtyMaxY) dirtyMaxY = worldY;
+            }
+        }
+
+        this.suppressModificationTracking = false;
+        if (dirtyMinX !== Infinity) {
+            this.markDirtyRegion(dirtyMinX, dirtyMinY, dirtyMaxX, dirtyMaxY);
+        }
+    }
+
     consumeInitialFluids() {
         const fluids = this.initialFluids.slice();
         this.initialFluids.length = 0;

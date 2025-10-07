@@ -17,7 +17,8 @@ class Projectile {
         this.maxLifetime = 3000;
         this.dead = false;
         this.pending = false;
-        
+        this.serverId = null;
+
         // Effect properties based on type
         this.setupType();
         

@@ -307,6 +307,10 @@ class GameServer {
 
         player.lastShotTime = now;
 
+        const clientProjectileId = (typeof msg.clientProjectileId === 'string' && msg.clientProjectileId.length > 0)
+            ? msg.clientProjectileId
+            : null;
+
         // Create server-side projectile
         const projectile = {
             id: this.generateProjectileId(),
@@ -316,11 +320,13 @@ class GameServer {
             vy: msg.vy,
             type: msg.type,
             ownerId: playerId,
+            clientProjectileId: clientProjectileId,
             lifetime: 0,
             maxLifetime: 3000,
             radius: 3,
             dead: false
         };
+        projectile.serverId = projectile.id;
 
         this.projectiles.push(projectile);
 
@@ -333,7 +339,9 @@ class GameServer {
             vx: projectile.vx,
             vy: projectile.vy,
             type: projectile.type,
-            ownerId: playerId
+            ownerId: playerId,
+            lifetime: projectile.lifetime,
+            clientProjectileId: clientProjectileId
         });
     }
 
@@ -345,7 +353,16 @@ class GameServer {
         }
 
         // Check if projectile origin is near player
-        const dist = Math.sqrt((msg.x - player.x) ** 2 + (msg.y - player.y) ** 2);
+        const dxRaw = msg.x - player.x;
+        const worldWidth = this.WORLD_WIDTH || 0;
+        let dx = dxRaw;
+        if (worldWidth > 0) {
+            const wrapped = ((dxRaw % worldWidth) + worldWidth) % worldWidth;
+            const alternate = wrapped > worldWidth / 2 ? wrapped - worldWidth : wrapped;
+            dx = alternate;
+        }
+        const dy = msg.y - player.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist > 50) { // Max distance from player
             return false;
         }
@@ -727,6 +744,17 @@ class GameServer {
                 aimAngle: Math.round(p.aimAngle * 100) / 100,
                 selectedSpell: p.selectedSpell,
                 lastProcessedInput: p.lastProcessedInput
+            })),
+            projectiles: this.projectiles.map(proj => ({
+                id: proj.id,
+                x: proj.x,
+                y: proj.y,
+                vx: proj.vx,
+                vy: proj.vy,
+                type: proj.type,
+                ownerId: proj.ownerId,
+                lifetime: proj.lifetime,
+                clientProjectileId: proj.clientProjectileId || null
             })),
             projectileCount: this.projectiles.length,
             chunkCount: this.chunks.length

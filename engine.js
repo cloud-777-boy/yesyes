@@ -60,6 +60,16 @@ class GameEngine {
         this.playerChunkBufferRadius = 2;
         this.maxComputedSandPriority = 1;
         this.network = null;
+        this.serverStats = {
+            players: 0,
+            sand: 0,
+            projectiles: 0,
+            tick: 0,
+            chunk: null,
+            lastTerrainUpdate: null,
+            lastSandUpdate: null
+        };
+        this.chunkSyncStatus = new Map();
         // Adaptive sand scheduling keeps multiplayer deterministic while throttling
         // interior blob updates. Intervals are tuned so edge particles update every
         // frame, shell layers follow shortly after, and dense cores are revisited
@@ -316,10 +326,22 @@ class GameEngine {
         const chunkSize = this.chunkSize;
         const totalChunksX = Math.ceil(this.width / chunkSize);
         const totalChunksY = Math.ceil(this.height / chunkSize);
-        const radiusX = Math.max(chunkSize, viewWidth * this.sandViewRadiusMultiplier);
-        const radiusY = Math.max(chunkSize, viewHeight * this.sandViewRadiusMultiplier);
-        const chunkRadiusX = Math.ceil(radiusX / chunkSize);
-        const chunkRadiusY = Math.ceil(radiusY / chunkSize);
+        const computeRadius = Math.max(0, Math.floor(this.playerChunkComputeRadius));
+        const bufferRadius = Math.max(0, Math.floor(this.playerChunkBufferRadius));
+        const maxActiveDist = Math.max(1, computeRadius + bufferRadius);
+
+        let chunkRadiusX;
+        let chunkRadiusY;
+
+        if (this.isServer) {
+            chunkRadiusX = maxActiveDist;
+            chunkRadiusY = maxActiveDist;
+        } else {
+            const radiusX = Math.max(chunkSize, viewWidth * this.sandViewRadiusMultiplier);
+            const radiusY = Math.max(chunkSize, viewHeight * this.sandViewRadiusMultiplier);
+            chunkRadiusX = Math.max(maxActiveDist, Math.ceil(radiusX / chunkSize));
+            chunkRadiusY = Math.max(maxActiveDist, Math.ceil(radiusY / chunkSize));
+        }
 
         this.activeChunkSet.clear();
         this.activeSandChunkPriority.clear();
@@ -352,13 +374,16 @@ class GameEngine {
                     const clampedChunkY = Math.max(0, Math.min(totalChunksY - 1, chunkY + dy));
                     const key = `${wrappedChunkX}|${clampedChunkY}`;
                     const dist = Math.max(Math.abs(dx), Math.abs(dy));
+                    if (this.isServer && dist > maxActiveDist) {
+                        continue;
+                    }
                     let priority = 3;
                     if (dist <= this.playerChunkComputeRadius) {
                         priority = 0;
                     } else if (dist <= this.playerChunkComputeRadius + this.playerChunkBufferRadius) {
                         priority = 1;
                     } else {
-                        priority = 2;
+                        priority = this.isServer ? maxActiveDist + 1 : 2;
                     }
                     setChunkPriority(key, priority);
                 }
@@ -1097,10 +1122,58 @@ class GameEngine {
     renderUI(ctx) {
         ctx.fillStyle = '#ffffff';
         ctx.font = '14px monospace';
-        ctx.fillText(`Players: ${this.players.size}`, 10, 20);
-        ctx.fillText(`Sand: ${this.getLocalSandCount()}`, 10, 40);
-        ctx.fillText(`Projectiles: ${this.projectiles.length}`, 10, 60);
-        ctx.fillText(`Tick: ${this.tick}`, 10, 80);
+        const stats = this.serverStats || {};
+
+        const playerCount = Number.isFinite(stats.players)
+            ? stats.players
+            : this.players.size;
+        const sandCount = Number.isFinite(stats.sand)
+            ? stats.sand
+            : this.getLocalSandCount();
+        const projectileCount = Number.isFinite(stats.projectiles)
+            ? stats.projectiles
+            : this.projectiles.length;
+        const tickValue = Number.isFinite(stats.tick)
+            ? stats.tick
+            : this.tick;
+
+        let chunkKey = (typeof stats.chunk === 'string' && stats.chunk.length > 0)
+            ? stats.chunk
+            : null;
+        if (!chunkKey) {
+            const referencePlayer = (this.playerId && this.players.has(this.playerId))
+                ? this.players.get(this.playerId)
+                : (this.playerList.length > 0
+                    ? this.playerList[0]
+                    : (this.players.size > 0 ? Array.from(this.players.values())[0] : null));
+            if (referencePlayer) {
+                chunkKey = this.getChunkKeyForPosition(referencePlayer.x, referencePlayer.y) || null;
+            }
+        }
+
+        const now = Date.now();
+        const terrainAge = Number.isFinite(stats.lastTerrainUpdate)
+            ? ((now - stats.lastTerrainUpdate) / 1000).toFixed(1) + 's'
+            : '—';
+        const sandAge = Number.isFinite(stats.lastSandUpdate)
+            ? ((now - stats.lastSandUpdate) / 1000).toFixed(1) + 's'
+            : '—';
+
+        const chunkInfo = chunkKey ? this.getChunkSyncInfo(chunkKey) : null;
+        const chunkTerrainAge = chunkInfo && Number.isFinite(chunkInfo.lastTerrain)
+            ? ((now - chunkInfo.lastTerrain) / 1000).toFixed(1) + 's'
+            : '—';
+        const chunkSandAge = chunkInfo && Number.isFinite(chunkInfo.lastSand)
+            ? ((now - chunkInfo.lastSand) / 1000).toFixed(1) + 's'
+            : '—';
+
+        ctx.fillText(`Players: ${playerCount}`, 10, 20);
+        ctx.fillText(`Sand: ${sandCount}`, 10, 40);
+        ctx.fillText(`Projectiles: ${projectileCount}`, 10, 60);
+        ctx.fillText(`Tick: ${tickValue}`, 10, 80);
+        ctx.fillText(`Chunk: ${chunkKey || '—'} [T ${chunkTerrainAge} | S ${chunkSandAge}]`, 10, 100);
+        ctx.fillText(`Terrain Δ: ${terrainAge}`, 10, 120);
+        ctx.fillText(`Sand Δ: ${sandAge}`, 10, 140);
     }
 
     getLocalSandCount() {
@@ -1150,6 +1223,74 @@ class GameEngine {
         return `${chunkX}|${chunkY}`;
     }
 
+    getChunkSyncInfo(key) {
+        if (!key) return null;
+        return this.chunkSyncStatus.get(key) || null;
+    }
+
+    markChunkSync(keys, { terrain = false, sand = false, full = false, tick = null } = {}) {
+        const timestamp = Date.now();
+        if (!keys) {
+            if (terrain) {
+                this.serverStats.lastTerrainUpdate = timestamp;
+            }
+            if (sand) {
+                this.serverStats.lastSandUpdate = timestamp;
+            }
+            return;
+        }
+
+        const list = Array.isArray(keys)
+            ? keys
+            : (keys instanceof Set ? Array.from(keys) : [keys]);
+        if (!list.length) {
+            if (terrain) {
+                this.serverStats.lastTerrainUpdate = timestamp;
+            }
+            if (sand) {
+                this.serverStats.lastSandUpdate = timestamp;
+            }
+            return;
+        }
+
+        for (const rawKey of list) {
+            if (!rawKey) continue;
+            const key = String(rawKey);
+            const status = this.chunkSyncStatus.get(key) || {
+                lastTerrain: null,
+                lastSand: null,
+                lastFull: null,
+                lastTick: null
+            };
+
+            if (terrain) {
+                status.lastTerrain = timestamp;
+            }
+            if (sand) {
+                status.lastSand = timestamp;
+            }
+            if (full) {
+                status.lastFull = timestamp;
+            }
+            if (Number.isFinite(tick)) {
+                status.lastTick = tick;
+            }
+
+            this.chunkSyncStatus.set(key, status);
+        }
+
+        if (terrain) {
+            this.serverStats.lastTerrainUpdate = timestamp;
+        }
+        if (sand) {
+            this.serverStats.lastSandUpdate = timestamp;
+        }
+        if (full && this.serverStats.chunk && !this.chunkSyncStatus.has(this.serverStats.chunk)) {
+            this.serverStats.lastTerrainUpdate = this.serverStats.lastTerrainUpdate ?? timestamp;
+            this.serverStats.lastSandUpdate = this.serverStats.lastSandUpdate ?? timestamp;
+        }
+    }
+
     getLiquidBlobAt(x, y) {
         if (!this.liquidBlobCache || this.liquidBlobCache.size === 0) {
             return null;
@@ -1166,6 +1307,9 @@ class GameEngine {
             }
             if (options.pending) {
                 proj.pending = true;
+            }
+            if (options.serverId) {
+                proj.serverId = options.serverId;
             }
         }
         this.projectiles.push(proj);
@@ -1434,20 +1578,57 @@ class GameEngine {
             return null;
         }
 
+        const computeRadius = Math.max(0, Math.floor(this.playerChunkComputeRadius));
+        const bufferRadius = Math.max(0, Math.floor(this.playerChunkBufferRadius));
+        const maxActiveRadius = Math.max(1, computeRadius + bufferRadius);
+
+        const activeKeys = Array.isArray(this.activeSandChunkKeys) && this.activeSandChunkKeys.length
+            ? this.activeSandChunkKeys
+            : null;
+
+        if (this.isServer && activeKeys) {
+            for (let i = 0; i < activeKeys.length; i++) {
+                const key = activeKeys[i];
+                if (!key) continue;
+                const list = this.sandChunks.get(key);
+                if (!list || list.length === 0) continue;
+                payload.chunks.push({
+                    key,
+                    particles: list.map((p) => ({
+                        x: p.x,
+                        y: p.y,
+                        vx: p.vx,
+                        vy: p.vy,
+                        material: p.material,
+                        color: p.color
+                    }))
+                });
+            }
+            return payload.chunks.length > 0 ? payload : null;
+        }
+
+        let effectiveRadius = Number.isFinite(chunkRadius) ? Math.max(0, Math.floor(chunkRadius)) : maxActiveRadius;
+        if (this.isServer) {
+            effectiveRadius = Math.min(effectiveRadius, maxActiveRadius);
+        } else {
+            effectiveRadius = Math.max(effectiveRadius, maxActiveRadius);
+        }
+
+        const totalChunksX = Math.ceil(this.width / this.chunkSize);
+        const totalChunksY = Math.ceil(this.height / this.chunkSize);
         const relevantChunks = new Set();
-        
+
         for (const player of this.players.values()) {
             const playerChunkX = Math.floor(player.x / this.chunkSize);
             const playerChunkY = Math.floor(player.y / this.chunkSize);
-            
-            for (let dy = -chunkRadius; dy <= chunkRadius; dy++) {
-                for (let dx = -chunkRadius; dx <= chunkRadius; dx++) {
+
+            for (let dy = -effectiveRadius; dy <= effectiveRadius; dy++) {
+                for (let dx = -effectiveRadius; dx <= effectiveRadius; dx++) {
                     const chunkX = playerChunkX + dx;
                     const chunkY = playerChunkY + dy;
-                    if (chunkY >= 0 && chunkY < Math.ceil(this.height / this.chunkSize)) {
-                        const wrappedChunkX = ((chunkX % Math.ceil(this.width / this.chunkSize)) + Math.ceil(this.width / this.chunkSize)) % Math.ceil(this.width / this.chunkSize);
-                        relevantChunks.add(`${wrappedChunkX}|${chunkY}`);
-                    }
+                    if (chunkY < 0 || chunkY >= totalChunksY) continue;
+                    const wrappedChunkX = ((chunkX % totalChunksX) + totalChunksX) % totalChunksX;
+                    relevantChunks.add(`${wrappedChunkX}|${chunkY}`);
                 }
             }
         }
@@ -1457,7 +1638,14 @@ class GameEngine {
             if (!list || list.length === 0) continue;
             payload.chunks.push({
                 key,
-                particles: list.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, material: p.material, color: p.color }))
+                particles: list.map((p) => ({
+                    x: p.x,
+                    y: p.y,
+                    vx: p.vx,
+                    vy: p.vy,
+                    material: p.material,
+                    color: p.color
+                }))
             });
         }
 
@@ -1529,6 +1717,13 @@ class GameEngine {
             chunks,
             full: false
         };
+    }
+
+    serializeTerrainChunksForKeys(keys) {
+        if (!this.terrain || typeof this.terrain.serializeChunksForKeys !== 'function') {
+            return null;
+        }
+        return this.terrain.serializeChunksForKeys(keys);
     }
 
     clearSandChunks() {

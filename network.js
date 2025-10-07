@@ -142,6 +142,14 @@ class NetworkManager {
                 this.handleSandUpdate(msg);
                 break;
 
+            case 'terrain_chunk_update':
+                this.handleTerrainChunkUpdate(msg);
+                break;
+
+            case 'chunk_sync':
+                this.handleChunkSync(msg);
+                break;
+
             case 'projectile':
                 if (!this.engineReady) break;
                 this.handleProjectileMessage(msg);
@@ -253,6 +261,39 @@ class NetworkManager {
             this.engine.setSeed(msg.seed);
         }
 
+        if (this.engine) {
+            const statsTarget = this.engine.serverStats || (this.engine.serverStats = {});
+            const incomingStats = msg.serverStats && typeof msg.serverStats === 'object'
+                ? msg.serverStats
+                : null;
+
+            if (incomingStats) {
+                if (Number.isFinite(incomingStats.players)) {
+                    statsTarget.players = incomingStats.players;
+                }
+                if (Number.isFinite(incomingStats.sand)) {
+                    statsTarget.sand = incomingStats.sand;
+                }
+                if (Number.isFinite(incomingStats.projectiles)) {
+                    statsTarget.projectiles = incomingStats.projectiles;
+                }
+                if (Number.isFinite(incomingStats.tick)) {
+                    statsTarget.tick = incomingStats.tick;
+                }
+            } else {
+                statsTarget.players = this.engine.players ? this.engine.players.size : statsTarget.players;
+                statsTarget.sand = typeof this.engine.getLocalSandCount === 'function'
+                    ? this.engine.getLocalSandCount()
+                    : statsTarget.sand;
+                statsTarget.projectiles = Array.isArray(this.engine.projectiles)
+                    ? this.engine.projectiles.length
+                    : statsTarget.projectiles;
+                statsTarget.tick = Number.isFinite(this.engine.tick)
+                    ? this.engine.tick
+                    : statsTarget.tick;
+            }
+        }
+
         if (typeof msg.chunkSize === 'number' && msg.chunkSize > 0 && msg.chunkSize !== this.engine.chunkSize) {
             this.engine.chunkSize = msg.chunkSize;
             if (this.engine.terrain && typeof this.engine.terrain.setChunkSize === 'function') {
@@ -320,6 +361,12 @@ class NetworkManager {
             const serverPlayer = playersData.find(p => p.id === this.playerId);
             if (serverPlayer) {
                 serverPlayer.tick = serverTick;
+                if (this.engine) {
+                    const statsTarget = this.engine.serverStats || (this.engine.serverStats = {});
+                    if (typeof serverPlayer.chunkKey === 'string' && serverPlayer.chunkKey.length > 0) {
+                        statsTarget.chunk = serverPlayer.chunkKey;
+                    }
+                }
                 this.reconcileState(serverPlayer);
             }
         }
@@ -352,6 +399,16 @@ class NetworkManager {
                 this.engine.loadSandChunks(msg);
                 console.log('[SAND UPDATE] Loaded full, sandCount:', this.engine.sandParticleCount);
             }
+            if (this.engine && typeof this.engine.markChunkSync === 'function') {
+                const fullKeys = Array.isArray(msg.chunks)
+                    ? msg.chunks.map(chunk => (chunk && typeof chunk.key === 'string') ? chunk.key : null).filter(Boolean)
+                    : [];
+                this.engine.markChunkSync(fullKeys.length ? fullKeys : null, {
+                    sand: true,
+                    full: true,
+                    tick: Number.isFinite(msg.tick) ? msg.tick : null
+                });
+            }
             return;
         }
 
@@ -362,6 +419,80 @@ class NetworkManager {
             this.engine.loadSandChunks(msg);
             console.log('[SAND UPDATE] Loaded, sandCount:', this.engine.sandParticleCount);
         }
+
+        if (this.engine && typeof this.engine.markChunkSync === 'function') {
+            const keys = Array.isArray(msg.chunks)
+                ? msg.chunks.map(chunk => (chunk && typeof chunk.key === 'string') ? chunk.key : null).filter(Boolean)
+                : [];
+            this.engine.markChunkSync(keys.length ? keys : null, {
+                sand: true,
+                full: false,
+                tick: Number.isFinite(msg.tick) ? msg.tick : null
+            });
+        }
+    }
+
+    handleTerrainChunkUpdate(msg) {
+        if (!this.engineReady || !msg || !msg.chunkDiff) return;
+        this.applyTerrainChunkDiffs([msg.chunkDiff]);
+    }
+
+    handleChunkSync(msg) {
+        if (!this.engineReady || !this.engine) return;
+        const terrainKeys = [];
+        const sandKeys = [];
+        if (msg.terrain && this.engine.terrain) {
+            const terrainChunkSize = typeof msg.terrain.chunkSize === 'number' && msg.terrain.chunkSize > 0
+                ? msg.terrain.chunkSize
+                : null;
+
+            if (terrainChunkSize && typeof this.engine.terrain.setChunkSize === 'function') {
+                this.engine.terrain.setChunkSize(terrainChunkSize);
+            }
+
+            if (typeof this.engine.terrain.applyChunkSnapshots === 'function') {
+                this.engine.terrain.applyChunkSnapshots(msg.terrain);
+            } else if (typeof this.engine.terrain.applyModifications === 'function') {
+                this.engine.terrain.applyModifications(msg.terrain);
+            }
+
+            if (Array.isArray(msg.terrain.chunks)) {
+                for (const chunk of msg.terrain.chunks) {
+                    if (chunk && typeof chunk.key === 'string') {
+                        terrainKeys.push(chunk.key);
+                    }
+                }
+            }
+        }
+
+        if (msg.sandChunks) {
+            if (typeof this.engine.updateSandChunks === 'function') {
+                this.engine.updateSandChunks(msg.sandChunks);
+            } else if (typeof this.engine.loadSandChunks === 'function') {
+                this.engine.loadSandChunks(msg.sandChunks);
+            }
+
+            if (Array.isArray(msg.sandChunks.chunks)) {
+                for (const chunk of msg.sandChunks.chunks) {
+                    if (chunk && typeof chunk.key === 'string') {
+                        sandKeys.push(chunk.key);
+                    }
+                }
+            }
+        }
+
+        if (typeof this.engine.markChunkSync === 'function') {
+            const combined = new Set();
+            for (const key of terrainKeys) combined.add(key);
+            for (const key of sandKeys) combined.add(key);
+            const hasTerrain = terrainKeys.length > 0;
+            const hasSand = sandKeys.length > 0;
+            this.engine.markChunkSync(combined.size ? combined : null, {
+                terrain: hasTerrain,
+                sand: hasSand,
+                full: true
+            });
+        }
     }
 
     handleProjectileMessage(msg) {
@@ -369,6 +500,9 @@ class NetworkManager {
 
         const clientId = (typeof msg.clientProjectileId === 'string' && msg.clientProjectileId.length)
             ? msg.clientProjectileId
+            : null;
+        const serverId = (typeof msg.id === 'string' && msg.id.length)
+            ? msg.id
             : null;
 
         let projectile = null;
@@ -400,7 +534,8 @@ class NetworkManager {
                 ownerId,
                 {
                     clientProjectileId: clientId,
-                    pending: false
+                    pending: false,
+                    serverId
                 }
             );
         } else {
@@ -411,6 +546,7 @@ class NetworkManager {
             projectile.ownerId = ownerId;
             projectile.type = type;
             projectile.clientProjectileId = clientId;
+            projectile.serverId = serverId;
             if (typeof msg.lifetime === 'number') {
                 projectile.lifetime = msg.lifetime;
             }
@@ -496,6 +632,14 @@ class NetworkManager {
 
             this.engine.terrain.applyModifications({ chunkSize, chunks });
 
+            if (typeof this.engine.markChunkSync === 'function') {
+                const keys = chunks.map(chunk => chunk.key).filter(Boolean);
+                this.engine.markChunkSync(keys.length ? keys : null, {
+                    terrain: true,
+                    tick: Number.isFinite(diff.tick) ? diff.tick : null
+                });
+            }
+
             if (typeof diff.tick === 'number') {
                 this.lastAppliedTerrainChunkTick = Math.max(this.lastAppliedTerrainChunkTick, diff.tick);
             }
@@ -533,13 +677,38 @@ class NetworkManager {
             this.appliedTerrainMods.set(key, newTick);
             this.pruneTerrainHistory();
             this.engine.destroyTerrain(mod.x, mod.y, mod.radius, mod.explosive, false);
+            if (typeof this.engine.markChunkSync === 'function' && typeof this.engine.getChunkKeyForPosition === 'function') {
+                const chunkKey = this.engine.getChunkKeyForPosition(mod.x, mod.y);
+                this.engine.markChunkSync(chunkKey ? [chunkKey] : null, {
+                    terrain: true,
+                    tick: newTick
+                });
+            }
             this.lastAppliedTerrainChunkTick = Math.max(this.lastAppliedTerrainChunkTick, newTick);
         }
     }
 
     syncProjectiles(projectiles) {
         if (!Array.isArray(projectiles) || !this.engine) return;
+        const existing = Array.isArray(this.engine.projectiles)
+            ? this.engine.projectiles
+            : [];
+
+        const byServerId = new Map();
+        const byClientId = new Map();
+        for (const proj of existing) {
+            if (!proj || typeof proj !== 'object') continue;
+            proj.__touched = false;
+            if (proj.serverId) {
+                byServerId.set(proj.serverId, proj);
+            }
+            if (proj.clientProjectileId) {
+                byClientId.set(proj.clientProjectileId, proj);
+            }
+        }
+
         const synchronized = [];
+
         for (const data of projectiles) {
             if (!data) continue;
             const type = data.type || 'fireball';
@@ -547,27 +716,74 @@ class NetworkManager {
             const clientId = (typeof data.clientProjectileId === 'string' && data.clientProjectileId.length)
                 ? data.clientProjectileId
                 : null;
+            const serverId = (typeof data.id === 'string' && data.id.length)
+                ? data.id
+                : null;
+
+            let proj = null;
+            if (serverId && byServerId.has(serverId)) {
+                proj = byServerId.get(serverId);
+                byServerId.delete(serverId);
+            } else if (clientId && byClientId.has(clientId)) {
+                proj = byClientId.get(clientId);
+                byClientId.delete(clientId);
+            }
+
             const wrappedX = typeof wrapHorizontal === 'function'
                 ? wrapHorizontal(data.x ?? 0, this.engine.width)
                 : (data.x ?? 0);
-            const proj = new Projectile(
-                wrappedX,
-                data.y ?? 0,
-                data.vx ?? 0,
-                data.vy ?? 0,
-                type,
-                ownerId
-            );
+
+            if (!proj) {
+                proj = new Projectile(
+                    wrappedX,
+                    data.y ?? 0,
+                    data.vx ?? 0,
+                    data.vy ?? 0,
+                    type,
+                    ownerId
+                );
+            } else {
+                proj.x = wrappedX;
+                proj.y = data.y ?? proj.y;
+                proj.vx = data.vx ?? proj.vx;
+                proj.vy = data.vy ?? proj.vy;
+                proj.type = type;
+                proj.ownerId = ownerId;
+            }
+
             if (typeof data.lifetime === 'number') {
                 proj.lifetime = data.lifetime;
             }
+
             if (clientId) {
                 proj.clientProjectileId = clientId;
                 proj.pending = false;
                 this.localProjectiles.delete(clientId);
             }
+
+            if (serverId) {
+                proj.serverId = serverId;
+            }
+
+            proj.__touched = true;
             synchronized.push(proj);
         }
+
+        for (const proj of synchronized) {
+            if (proj && typeof proj === 'object' && proj.__touched) {
+                delete proj.__touched;
+            }
+        }
+
+        if (this.localProjectiles && this.localProjectiles.size > 0) {
+            for (const [clientId, entry] of Array.from(this.localProjectiles.entries())) {
+                const proj = entry && entry.projectile;
+                if (!proj || !synchronized.includes(proj)) {
+                    this.localProjectiles.delete(clientId);
+                }
+            }
+        }
+
         this.engine.projectiles = synchronized;
     }
 
@@ -685,11 +901,6 @@ class NetworkManager {
 
     sendTerrainDestruction(x, y, radius, explosive) {
         if (!this.connected) return;
-        if (this.engineReady) {
-            const key = `${x}:${y}:${radius}:${explosive ? 1 : 0}`;
-            this.appliedTerrainMods.set(key, Number.MAX_SAFE_INTEGER);
-            this.pruneTerrainHistory();
-        }
         this.send({
             type: 'terrain_destroy',
             x,
