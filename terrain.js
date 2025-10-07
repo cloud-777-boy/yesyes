@@ -846,6 +846,10 @@ class Terrain {
         this.setChunkSize(chunkSize);
         const chunks = snapshot.chunks || [];
         this.suppressModificationTracking = true;
+        let dirtyMinX = Infinity;
+        let dirtyMinY = Infinity;
+        let dirtyMaxX = -Infinity;
+        let dirtyMaxY = -Infinity;
         for (let i = 0; i < chunks.length; i++) {
             const entry = chunks[i];
             if (!entry || !entry.key || !Array.isArray(entry.pixels)) continue;
@@ -865,10 +869,19 @@ class Terrain {
                 const worldY = chunkY * chunkSize + localY;
                 const wrappedX = Math.floor(wrapHorizontal(worldX, this.width));
                 if (worldY < 0 || worldY >= this.height) continue;
+                const previousMaterial = this.getPixel(wrappedX, worldY);
+                if (previousMaterial === material) continue;
                 this.setPixel(wrappedX, worldY, material);
+                if (wrappedX < dirtyMinX) dirtyMinX = wrappedX;
+                if (wrappedX > dirtyMaxX) dirtyMaxX = wrappedX;
+                if (worldY < dirtyMinY) dirtyMinY = worldY;
+                if (worldY > dirtyMaxY) dirtyMaxY = worldY;
             }
         }
         this.suppressModificationTracking = false;
+        if (dirtyMinX !== Infinity) {
+            this.markDirtyRegion(dirtyMinX, dirtyMinY, dirtyMaxX, dirtyMaxY);
+        }
     }
 
     consumeInitialFluids() {

@@ -42,9 +42,10 @@ class GameEngine {
         this.activeSandChunkKeys = [];
         this.activeSandLookup = [];
         this.activeSandChunkPriority = new Map();
-        this.baseSandCapacity = 6000;
+        this.absoluteSandCap = 10000;
+        this.baseSandCapacity = this.absoluteSandCap;
         this.maxSandParticles = this.baseSandCapacity;
-        this.sandPoolLimit = 5000;
+        this.sandPoolLimit = this.absoluteSandCap;
         this.maxSandUpdatesPerFrame = 900;
         this.maxSandSpawnPerDestroy = 500;
         this.sandAdaptiveCursor = 0;
@@ -332,6 +333,14 @@ class GameEngine {
         };
 
         const players = this.playerList.length ? this.playerList : Array.from(this.players.values());
+        if (players.length === 0) {
+            this.activeChunkKeys.length = 0;
+            this.activeSandLists.length = 0;
+            this.activeSandChunkKeys.length = 0;
+            this.activeSandLookup.length = 0;
+            return;
+        }
+
         const sortedPlayers = players.slice().sort((a, b) => a.id.localeCompare(b.id));
         for (let i = 0; i < sortedPlayers.length; i++) {
             const player = sortedPlayers[i];
@@ -353,17 +362,6 @@ class GameEngine {
                     }
                     setChunkPriority(key, priority);
                 }
-            }
-        }
-
-        const camChunkX = Math.floor(this.cameraX / chunkSize);
-        const camChunkY = Math.floor(this.cameraY / chunkSize);
-        for (let dx = -chunkRadiusX; dx <= chunkRadiusX; dx++) {
-            for (let dy = -chunkRadiusY; dy <= chunkRadiusY; dy++) {
-                const wrappedChunkX = ((camChunkX + dx) % totalChunksX + totalChunksX) % totalChunksX;
-                const clampedChunkY = Math.max(0, Math.min(totalChunksY - 1, camChunkY + dy));
-                const key = `${wrappedChunkX}|${clampedChunkY}`;
-                setChunkPriority(key, Math.min(this.activeSandChunkPriority.get(key) ?? 3, 3));
             }
         }
 
@@ -663,16 +661,25 @@ class GameEngine {
 
     ensureSandCapacity(pendingFluids = 0) {
         const area = this.width * this.height;
-        const areaDrivenTarget = Math.min(60000, Math.floor(area * 0.004));
+        const areaDrivenTarget = Math.min(this.absoluteSandCap, Math.floor(area * 0.004));
         const currentNeed = this.sandParticleCount + Math.max(0, pendingFluids);
-        const fluidPadding = pendingFluids > 0 ? Math.max(500, Math.ceil(pendingFluids * 0.1)) : 0;
-        const target = Math.max(this.baseSandCapacity, areaDrivenTarget, currentNeed + fluidPadding);
-        if (target > this.maxSandParticles) {
-            this.maxSandParticles = target;
+        const fluidPadding = pendingFluids > 0 ? Math.max(250, Math.ceil(pendingFluids * 0.1)) : 0;
+        const requested = Math.max(
+            this.baseSandCapacity,
+            areaDrivenTarget,
+            Math.min(this.absoluteSandCap, currentNeed + fluidPadding)
+        );
+        const boundedTarget = Math.min(this.absoluteSandCap, requested);
+        if (boundedTarget > this.maxSandParticles) {
+            this.maxSandParticles = boundedTarget;
+        } else {
+            this.maxSandParticles = Math.min(this.maxSandParticles, this.absoluteSandCap);
         }
-        const desiredPoolLimit = Math.max(5000, Math.floor(this.maxSandParticles * 0.6));
+
+        this.sandPoolLimit = Math.min(this.sandPoolLimit, this.absoluteSandCap);
+        const desiredPoolLimit = Math.min(this.absoluteSandCap, Math.max(1000, Math.floor(this.maxSandParticles * 0.6)));
         const boundedPool = Math.min(this.maxSandParticles, desiredPoolLimit);
-        this.sandPoolLimit = Math.max(this.sandPoolLimit, boundedPool);
+        this.sandPoolLimit = Math.min(this.absoluteSandCap, Math.max(this.sandPoolLimit, boundedPool));
     }
 
     findSandParticleAt(x, y) {
@@ -1091,9 +1098,47 @@ class GameEngine {
         ctx.fillStyle = '#ffffff';
         ctx.font = '14px monospace';
         ctx.fillText(`Players: ${this.players.size}`, 10, 20);
-        ctx.fillText(`Sand: ${this.sandParticleCount}`, 10, 40);
+        ctx.fillText(`Sand: ${this.getLocalSandCount()}`, 10, 40);
         ctx.fillText(`Projectiles: ${this.projectiles.length}`, 10, 60);
         ctx.fillText(`Tick: ${this.tick}`, 10, 80);
+    }
+
+    getLocalSandCount() {
+        const chunkSize = this.chunkSize;
+        if (!(chunkSize > 0)) {
+            return 0;
+        }
+
+        let referencePlayer = null;
+        if (this.playerId && this.players.has(this.playerId)) {
+            referencePlayer = this.players.get(this.playerId);
+        } else if (this.playerList.length > 0) {
+            referencePlayer = this.playerList[0];
+        } else if (this.players.size > 0) {
+            referencePlayer = Array.from(this.players.values())[0];
+        }
+
+        if (!referencePlayer) {
+            return 0;
+        }
+
+        const totalChunksX = Math.ceil(this.width / chunkSize);
+        const totalChunksY = Math.ceil(this.height / chunkSize);
+        const chunkX = ((Math.floor(referencePlayer.x / chunkSize) % totalChunksX) + totalChunksX) % totalChunksX;
+        const chunkY = Math.max(0, Math.min(totalChunksY - 1, Math.floor(referencePlayer.y / chunkSize)));
+        const key = `${chunkX}|${chunkY}`;
+        const list = this.sandChunks.get(key);
+        if (!list || list.length === 0) {
+            return 0;
+        }
+
+        let count = 0;
+        for (let i = 0; i < list.length; i++) {
+            if (!list[i].dead) {
+                count++;
+            }
+        }
+        return count;
     }
 
     getChunkKeyForPosition(x, y) {
@@ -1544,7 +1589,9 @@ class GameEngine {
             this.ensureSandCapacity(this.sandParticleCount + pendingParticles);
         }
 
-        for (let i = 0; i < entries.length; i++) {
+        let reachedSandCap = false;
+
+        for (let i = 0; i < entries.length && !reachedSandCap; i++) {
             const entry = entries[i];
             if (!entry || !entry.key || !Array.isArray(entry.particles)) continue;
 
@@ -1565,6 +1612,10 @@ class GameEngine {
             if (!particles.length) continue;
 
             for (let j = 0; j < particles.length; j++) {
+                if (this.sandParticleCount >= this.maxSandParticles) {
+                    reachedSandCap = true;
+                    break;
+                }
                 const data = particles[j];
                 if (typeof data.x !== 'number' || typeof data.y !== 'number') continue;
                 const sand = this.getSandParticleFromPool();

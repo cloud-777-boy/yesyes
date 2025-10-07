@@ -73,6 +73,12 @@ class GameServer {
         this.maxTerrainModBroadcast = 64;
         this.terrainSnapshot = null;
         this.pendingTerrainBroadcasts = [];
+        this.terrainSnapshotTick = 0;
+        this.terrainChunkHistory = [];
+        this.maxTerrainChunkHistory = 4096;
+        this.pendingTerrainChunkDiffs = [];
+        this.maxTerrainChunkBroadcast = 128;
+        this.terrainChunkDiffCounter = 0;
         this.playerCounter = 0;
         this.seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
         this.random = DeterministicRandom ? new DeterministicRandom(this.seed) : null;
@@ -117,6 +123,7 @@ class GameServer {
         };
         this.terrainSnapshot = this.engine.getTerrainSnapshot();
         this.tick = this.engine.tick;
+        this.terrainSnapshotTick = this.tick;
         const pixelLength = this.terrainSnapshot && this.terrainSnapshot.pixels
             ? this.terrainSnapshot.pixels.length
             : 0;
@@ -163,6 +170,103 @@ class GameServer {
             explosive,
             tick: mod.tick
         });
+
+        this.captureTerrainChunkDiff(mod.tick);
+    }
+
+    captureTerrainChunkDiff(tick = this.tick) {
+        if (!this.engine || !this.engine.terrain || typeof this.engine.terrain.getModifications !== 'function') {
+            return;
+        }
+
+        const diff = this.engine.terrain.getModifications();
+        if (!diff || !Array.isArray(diff.chunks) || diff.chunks.length === 0) {
+            return;
+        }
+
+        const sanitized = this.sanitizeTerrainChunkDiff(diff, tick);
+        if (!sanitized || sanitized.chunks.length === 0) {
+            return;
+        }
+
+        this.pendingTerrainChunkDiffs.push(sanitized);
+        if (this.pendingTerrainChunkDiffs.length > this.maxTerrainChunkBroadcast) {
+            this.pendingTerrainChunkDiffs.splice(0, this.pendingTerrainChunkDiffs.length - this.maxTerrainChunkBroadcast);
+        }
+
+        this.terrainChunkHistory.push(sanitized);
+        if (this.terrainChunkHistory.length > this.maxTerrainChunkHistory) {
+            this.refreshTerrainSnapshot(true);
+        }
+    }
+
+    sanitizeTerrainChunkDiff(diff, tick) {
+        const chunkSize = typeof diff.chunkSize === 'number' && diff.chunkSize > 0
+            ? diff.chunkSize
+            : (this.engine && typeof this.engine.chunkSize === 'number' ? this.engine.chunkSize : 0);
+        const normalizedTick = Number.isFinite(tick) ? tick : this.tick;
+
+        const sanitized = {
+            id: ++this.terrainChunkDiffCounter,
+            tick: normalizedTick,
+            chunkSize,
+            chunks: []
+        };
+
+        for (const entry of diff.chunks) {
+            if (!entry || !entry.key) continue;
+            const pixels = Array.isArray(entry.pixels)
+                ? entry.pixels
+                    .filter((px) => px && typeof px.localIndex === 'number' && typeof px.material === 'number')
+                    .map((px) => ({ localIndex: px.localIndex, material: px.material }))
+                : [];
+            if (pixels.length === 0) continue;
+            sanitized.chunks.push({
+                key: entry.key,
+                pixels
+            });
+        }
+
+        return sanitized;
+    }
+
+    refreshTerrainSnapshot(preservePendingDiffs = false) {
+        if (!this.engine || typeof this.engine.getTerrainSnapshot !== 'function') {
+            return;
+        }
+        const snapshot = this.engine.getTerrainSnapshot();
+        if (snapshot) {
+            this.terrainSnapshot = snapshot;
+        }
+        this.terrainSnapshotTick = this.tick;
+        this.terrainChunkHistory.length = 0;
+        if (!preservePendingDiffs) {
+            this.pendingTerrainChunkDiffs.length = 0;
+        }
+        if (Array.isArray(this.terrainModifications) && this.terrainModifications.length > 0) {
+            this.terrainModifications = this.terrainModifications.filter((entry) => {
+                if (!entry || typeof entry.tick !== 'number') return false;
+                return entry.tick > this.terrainSnapshotTick;
+            });
+        }
+    }
+
+    getTerrainChunkHistorySnapshot() {
+        if (!this.terrainChunkHistory || this.terrainChunkHistory.length === 0) {
+            return null;
+        }
+        return this.terrainChunkHistory.map((entry) => ({
+            id: entry.id,
+            tick: entry.tick,
+            chunkSize: entry.chunkSize,
+            chunks: entry.chunks.map((chunk) => ({
+                key: chunk.key,
+                pixels: chunk.pixels.map((pixel) => ({
+                    localIndex: pixel.localIndex,
+                    material: pixel.material
+                }))
+            }))
+        }));
     }
     
     setupServer() {
@@ -202,8 +306,19 @@ class GameServer {
                 selectedSpell: player.selectedSpell,
                 seed: this.seed,
                 terrainSnapshot: this.terrainSnapshot,
-                terrainMods: this.terrainModifications.slice(-this.maxTerrainModBroadcast)
+                terrainSnapshotTick: this.terrainSnapshotTick
             };
+            const modsForWelcome = this.terrainModifications
+                .filter((entry) => {
+                    if (!entry || typeof entry.tick !== 'number') return true;
+                    return entry.tick > this.terrainSnapshotTick;
+                })
+                .slice(-this.maxTerrainModBroadcast);
+            welcomePayload.terrainMods = modsForWelcome;
+            const terrainChunkDiffs = this.getTerrainChunkHistorySnapshot();
+            if (terrainChunkDiffs && terrainChunkDiffs.length > 0) {
+                welcomePayload.terrainChunkDiffs = terrainChunkDiffs;
+            }
             if (this.engine) {
                 if (typeof this.engine.chunkSize === 'number') {
                     welcomePayload.chunkSize = this.engine.chunkSize;
@@ -413,14 +528,23 @@ class GameServer {
             ? this.pendingTerrainBroadcasts.splice(0, this.pendingTerrainBroadcasts.length)
             : [];
 
+        const terrainChunkDiffs = this.pendingTerrainChunkDiffs.length
+            ? this.pendingTerrainChunkDiffs.splice(0, this.pendingTerrainChunkDiffs.length)
+            : [];
+
         const state = {
             type: 'state',
             tick: this.tick,
             seed: this.seed,
             players,
             projectiles,
-            terrainMods
+            terrainMods,
+            terrainSnapshotTick: this.terrainSnapshotTick
         };
+
+        if (terrainChunkDiffs.length) {
+            state.terrainChunkDiffs = terrainChunkDiffs;
+        }
 
         // Sand updates are now handled separately with throttling
         // to prevent memory leaks

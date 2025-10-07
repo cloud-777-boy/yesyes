@@ -34,6 +34,9 @@ class NetworkManager {
         this.latency = 0;
         this.serverUrl = null;
         this.appliedTerrainMods = new Map();
+        this.appliedTerrainChunkDiffs = new Set();
+        this.maxTerrainChunkDiffHistory = 2048;
+        this.lastAppliedTerrainChunkTick = -Infinity;
     }
 
     attachEngine(engine) {
@@ -93,6 +96,9 @@ class NetworkManager {
             this.socket = null;
         }
         this.connected = false;
+        this.appliedTerrainMods.clear();
+        this.appliedTerrainChunkDiffs.clear();
+        this.lastAppliedTerrainChunkTick = -Infinity;
     }
 
     send(data) {
@@ -142,8 +148,7 @@ class NetworkManager {
                 break;
 
             case 'terrain_snapshot':
-                this.applyTerrainSnapshot(msg.snapshot);
-                this.appliedTerrainMods.clear();
+                this.applyTerrainSnapshot(msg.snapshot, msg.snapshotTick);
                 break;
 
             case 'pong':
@@ -184,8 +189,17 @@ class NetworkManager {
             this.engine.setSeed(msg.seed);
         }
 
+        this.appliedTerrainMods.clear();
+        this.appliedTerrainChunkDiffs.clear();
+        this.lastAppliedTerrainChunkTick = -Infinity;
+
         if (msg.terrainSnapshot) {
-            this.applyTerrainSnapshot(msg.terrainSnapshot);
+            this.applyTerrainSnapshot(msg.terrainSnapshot, msg.terrainSnapshotTick);
+        } else if (Number.isFinite(msg.terrainSnapshotTick)) {
+            this.lastAppliedTerrainChunkTick = msg.terrainSnapshotTick;
+        }
+        if (Array.isArray(msg.terrainChunkDiffs)) {
+            this.applyTerrainChunkDiffs(msg.terrainChunkDiffs);
         }
         if (Array.isArray(msg.terrainMods)) {
             this.applyTerrainMods(msg.terrainMods);
@@ -244,6 +258,14 @@ class NetworkManager {
             if (this.engine.terrain && typeof this.engine.terrain.setChunkSize === 'function') {
                 this.engine.terrain.setChunkSize(msg.chunkSize);
             }
+        }
+
+        if (Number.isFinite(msg.terrainSnapshotTick)) {
+            this.lastAppliedTerrainChunkTick = Math.max(this.lastAppliedTerrainChunkTick, msg.terrainSnapshotTick);
+        }
+
+        if (Array.isArray(msg.terrainChunkDiffs)) {
+            this.applyTerrainChunkDiffs(msg.terrainChunkDiffs);
         }
 
         if (msg.sandChunks && typeof this.engine.loadSandChunks === 'function') {
@@ -411,6 +433,80 @@ class NetworkManager {
         }
     }
 
+    pruneTerrainChunkDiffHistory() {
+        if (!(this.appliedTerrainChunkDiffs instanceof Set)) return;
+        while (this.appliedTerrainChunkDiffs.size > this.maxTerrainChunkDiffHistory) {
+            const first = this.appliedTerrainChunkDiffs.values().next();
+            if (first.done) break;
+            this.appliedTerrainChunkDiffs.delete(first.value);
+        }
+    }
+
+    applyTerrainChunkDiffs(diffList) {
+        if (!Array.isArray(diffList) || !this.engine || !this.engine.terrain) return;
+
+        const sorted = diffList.slice().sort((a, b) => {
+            const ta = typeof a.tick === 'number' ? a.tick : this.lastAppliedTerrainChunkTick;
+            const tb = typeof b.tick === 'number' ? b.tick : this.lastAppliedTerrainChunkTick;
+            if (ta !== tb) return ta - tb;
+            const idA = typeof a.id === 'number' ? a.id : 0;
+            const idB = typeof b.id === 'number' ? b.id : 0;
+            return idA - idB;
+        });
+
+        for (const diff of sorted) {
+            const diffId = typeof diff.id === 'number' ? diff.id : null;
+            if (diffId !== null && this.appliedTerrainChunkDiffs.has(diffId)) {
+                continue;
+            }
+
+            const chunkSize = typeof diff.chunkSize === 'number' && diff.chunkSize > 0
+                ? diff.chunkSize
+                : this.engine.chunkSize;
+
+            const chunks = [];
+            if (Array.isArray(diff.chunks)) {
+                for (const chunk of diff.chunks) {
+                    if (!chunk || !chunk.key) continue;
+                    const pixels = Array.isArray(chunk.pixels)
+                        ? chunk.pixels
+                            .filter((p) => p && typeof p.localIndex === 'number' && typeof p.material === 'number')
+                            .map((p) => ({ localIndex: p.localIndex, material: p.material }))
+                        : [];
+                    if (pixels.length === 0) continue;
+                    chunks.push({ key: String(chunk.key), pixels });
+                }
+            }
+
+            if (chunks.length === 0) {
+                if (diffId !== null) {
+                    this.appliedTerrainChunkDiffs.add(diffId);
+                    this.pruneTerrainChunkDiffHistory();
+                }
+                continue;
+            }
+
+            if (typeof chunkSize === 'number' && chunkSize > 0 && chunkSize !== this.engine.chunkSize) {
+                this.engine.chunkSize = chunkSize;
+            }
+
+            if (this.engine.terrain && typeof this.engine.terrain.setChunkSize === 'function' && chunkSize > 0) {
+                this.engine.terrain.setChunkSize(chunkSize);
+            }
+
+            this.engine.terrain.applyModifications({ chunkSize, chunks });
+
+            if (typeof diff.tick === 'number') {
+                this.lastAppliedTerrainChunkTick = Math.max(this.lastAppliedTerrainChunkTick, diff.tick);
+            }
+
+            if (diffId !== null) {
+                this.appliedTerrainChunkDiffs.add(diffId);
+                this.pruneTerrainChunkDiffHistory();
+            }
+        }
+    }
+
     applyTerrainMods(mods) {
         if (!Array.isArray(mods) || !this.engine) return;
         const sortedMods = mods.slice().sort((a, b) => {
@@ -422,18 +518,13 @@ class NetworkManager {
             return keyA.localeCompare(keyB);
         });
 
-        const SENTINEL_TICK = Number.MAX_SAFE_INTEGER;
-
         for (const mod of sortedMods) {
             const key = `${mod.x}:${mod.y}:${mod.radius}:${mod.explosive ? 1 : 0}`;
             const newTick = Number.isFinite(mod.tick) ? mod.tick : this.confirmedTick;
-            const previousTick = this.appliedTerrainMods.get(key);
-
-            if (previousTick === SENTINEL_TICK) {
-                this.appliedTerrainMods.set(key, newTick);
-                this.pruneTerrainHistory();
+            if (Number.isFinite(this.lastAppliedTerrainChunkTick) && newTick < this.lastAppliedTerrainChunkTick) {
                 continue;
             }
+            const previousTick = this.appliedTerrainMods.get(key);
 
             if (previousTick !== undefined && newTick <= previousTick) {
                 continue;
@@ -442,6 +533,7 @@ class NetworkManager {
             this.appliedTerrainMods.set(key, newTick);
             this.pruneTerrainHistory();
             this.engine.destroyTerrain(mod.x, mod.y, mod.radius, mod.explosive, false);
+            this.lastAppliedTerrainChunkTick = Math.max(this.lastAppliedTerrainChunkTick, newTick);
         }
     }
 
@@ -479,10 +571,12 @@ class NetworkManager {
         this.engine.projectiles = synchronized;
     }
 
-    applyTerrainSnapshot(snapshot) {
+    applyTerrainSnapshot(snapshot, snapshotTick = null) {
         if (!this.engineReady || !snapshot) return;
         this.engine.loadTerrainSnapshot(snapshot);
         this.appliedTerrainMods.clear();
+        this.appliedTerrainChunkDiffs.clear();
+        this.lastAppliedTerrainChunkTick = Number.isFinite(snapshotTick) ? snapshotTick : -Infinity;
         if (typeof this.options.onTerrainSnapshot === 'function') {
             this.options.onTerrainSnapshot(snapshot);
         }
