@@ -931,10 +931,17 @@ class Terrain {
         return props ? props.type === 'liquid' : false;
     }
     
-    destroy(centerX, centerY, radius) {
+    destroy(centerX, centerY, radius, options = null) {
+        const opts = options || {};
+        const skipChunkProcessing = !!opts.skipChunkProcessing;
+        const stats = opts && typeof opts.stats === 'object' ? opts.stats : null;
         const chunks = [];
-        const visited = new Set();
-        
+        const visited = skipChunkProcessing ? null : new Set();
+
+        if (stats && typeof stats.destroyed !== 'number') {
+            stats.destroyed = 0;
+        }
+
         centerX = Math.floor(centerX);
         centerY = Math.floor(centerY);
         this.ensureRegionLoaded(
@@ -955,7 +962,6 @@ class Terrain {
         let overflowMinX = Infinity;
         let overflowMaxX = -Infinity;
 
-        // Helper to expand dirty bounds without function allocation inside loops.
         const extendDirtyBounds = (x, y) => {
             if (x < dirtyMinX) dirtyMinX = x;
             if (x > dirtyMaxX) dirtyMaxX = x;
@@ -963,27 +969,27 @@ class Terrain {
             if (y > dirtyMaxY) dirtyMaxY = y;
         };
 
-        // Remove pixels in radius
         const radiusSq = radius * radius;
-        for (let dy = -radius; dy <= radius; dy++) {
-            for (let dx = -radius; dx <= radius; dx++) {
-                const x = centerX + dx;
+
+        if (skipChunkProcessing) {
+            for (let dy = -radius; dy <= radius; dy++) {
                 const y = centerY + dy;
+                if (y < 0 || y >= this.height) continue;
 
-                const distSq = dx * dx + dy * dy;
-                if (distSq > radiusSq) continue;
+                for (let dx = -radius; dx <= radius; dx++) {
+                    const distSq = dx * dx + dy * dy;
+                    if (distSq > radiusSq) continue;
 
-                const material = this.getPixel(x, y);
-                if (material === this.EMPTY || material === this.BEDROCK) continue;
+                    const x = centerX + dx;
+                    const wrappedX = Math.floor(wrapHorizontal(x, this.width));
+                    const index = y * this.width + wrappedX;
+                    const material = this.pixels[index];
 
-                const props = this.substances[material] || this.substances[this.STONE];
-                const distance = Math.sqrt(distSq);
-                const impact = Math.max(0, radius - distance);
+                    if (material === this.EMPTY || material === this.BEDROCK) continue;
 
-                const wrappedX = Math.floor(wrapHorizontal(x, this.width));
-                if (impact >= props.durability || props.durability === 0) {
                     this.setPixel(x, y, this.EMPTY);
                     extendDirtyBounds(wrappedX, y);
+
                     if (x < 0) {
                         if (x < underflowMinX) underflowMinX = x;
                         if (x > underflowMaxX) underflowMaxX = x;
@@ -991,42 +997,83 @@ class Terrain {
                         if (x < overflowMinX) overflowMinX = x;
                         if (x > overflowMaxX) overflowMaxX = x;
                     }
-                } else if (impact >= props.durability * 0.5 && props.degradeTo !== null && props.degradeTo !== undefined) {
-                    this.setPixel(x, y, props.degradeTo);
-                    extendDirtyBounds(wrappedX, y);
+
+                    if (stats) {
+                        stats.destroyed += 1;
+                    }
                 }
             }
-        }
-        
-        // Find disconnected chunks in affected area
-        const searchRadius = radius + 10;
-        for (let dy = -searchRadius; dy <= searchRadius; dy++) {
-            for (let dx = -searchRadius; dx <= searchRadius; dx++) {
-                const x = centerX + dx;
-                const y = centerY + dy;
-                
-                const wrappedX = Math.floor(wrapHorizontal(x, this.width));
-                const visitKey = `${wrappedX},${y}`;
-                if (this.getPixel(wrappedX, y) !== this.EMPTY && !visited.has(visitKey)) {
-                    const chunk = this.floodFill(wrappedX, y, visited, 400, x);
-                    
-                    // Only create chunks if disconnected from ground
-                    if (chunk.pixels.length > 0 && chunk.pixels.length < 400 && !this.isGrounded(chunk)) {
-                        chunks.push(chunk);
-                        
-                        // Remove from terrain
-                        for (const px of chunk.pixels) {
-                            this.setPixel(px.x, px.y, this.EMPTY);
-                            extendDirtyBounds(Math.floor(wrapHorizontal(px.x, this.width)), px.y);
+        } else {
+            for (let dy = -radius; dy <= radius; dy++) {
+                for (let dx = -radius; dx <= radius; dx++) {
+                    const x = centerX + dx;
+                    const y = centerY + dy;
+
+                    const distSq = dx * dx + dy * dy;
+                    if (distSq > radiusSq) continue;
+
+                    const material = this.getPixel(x, y);
+                    if (material === this.EMPTY || material === this.BEDROCK) continue;
+
+                    const props = this.substances[material] || this.substances[this.STONE];
+                    const distance = Math.sqrt(distSq);
+                    const impact = Math.max(0, radius - distance);
+
+                    const wrappedX = Math.floor(wrapHorizontal(x, this.width));
+                    if (impact >= props.durability || props.durability === 0) {
+                        this.setPixel(x, y, this.EMPTY);
+                        extendDirtyBounds(wrappedX, y);
+                        if (x < 0) {
+                            if (x < underflowMinX) underflowMinX = x;
+                            if (x > underflowMaxX) underflowMaxX = x;
+                        } else if (x >= this.width) {
+                            if (x < overflowMinX) overflowMinX = x;
+                            if (x > overflowMaxX) overflowMaxX = x;
+                        }
+                        if (stats) {
+                            stats.destroyed += 1;
+                        }
+                    } else if (impact >= props.durability * 0.5 && props.degradeTo !== null && props.degradeTo !== undefined) {
+                        this.setPixel(x, y, props.degradeTo);
+                        extendDirtyBounds(wrappedX, y);
+                        if (stats) {
+                            stats.destroyed += 1;
                         }
                     }
                 }
             }
         }
-        
-        if (dirtyMinX !== Infinity) {
-            this.markDirtyRegion(dirtyMinX, dirtyMinY, dirtyMaxX, dirtyMaxY);
+
+        if (dirtyMinX === Infinity) {
+            return chunks;
         }
+
+        if (!skipChunkProcessing) {
+            const searchRadius = radius + 10;
+            for (let dy = -searchRadius; dy <= searchRadius; dy++) {
+                for (let dx = -searchRadius; dx <= searchRadius; dx++) {
+                    const x = centerX + dx;
+                    const y = centerY + dy;
+
+                    const wrappedX = Math.floor(wrapHorizontal(x, this.width));
+                    const visitKey = `${wrappedX},${y}`;
+                    if (this.getPixel(wrappedX, y) !== this.EMPTY && !visited.has(visitKey)) {
+                        const chunk = this.floodFill(wrappedX, y, visited, 400, x);
+
+                        if (chunk.pixels.length > 0 && chunk.pixels.length < 400 && !this.isGrounded(chunk)) {
+                            chunks.push(chunk);
+
+                            for (const px of chunk.pixels) {
+                                this.setPixel(px.x, px.y, this.EMPTY);
+                                extendDirtyBounds(Math.floor(wrapHorizontal(px.x, this.width)), px.y);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        this.markDirtyRegion(dirtyMinX, dirtyMinY, dirtyMaxX, dirtyMaxY);
 
         if (underflowMaxX !== -Infinity) {
             const start = Math.floor(wrapHorizontal(underflowMinX, this.width));
@@ -1044,7 +1091,9 @@ class Terrain {
             }
         }
 
-        this.healVerticalSeams(centerX, centerY, radius + 6);
+        if (!skipChunkProcessing) {
+            this.healVerticalSeams(centerX, centerY, radius + 6);
+        }
 
         return chunks;
     }

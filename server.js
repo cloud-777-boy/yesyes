@@ -47,11 +47,15 @@ class GameServer {
         // Rate limiting (per player)
         this.INPUT_RATE_LIMIT = 120; // Max inputs per second
         this.PROJECTILE_RATE_LIMIT = 10; // Max projectiles per second
+        this.PROJECTILE_DEDUP_WINDOW = 10000; // ms to dedupe client projectile resends
 
         // Performance tracking
         this.startTime = Date.now();
         this.totalMessages = 0;
         this.tickTimes = [];
+
+        // Client projectile deduplication (track recent ids per player)
+        this.recentClientProjectiles = new Map();
 
         this.initTerrain();
         this.setupServer();
@@ -311,6 +315,68 @@ class GameServer {
             ? msg.clientProjectileId
             : null;
 
+        if (clientProjectileId) {
+            const now = Date.now();
+            let playerProjectiles = this.recentClientProjectiles.get(playerId);
+            if (!playerProjectiles) {
+                playerProjectiles = new Map();
+                this.recentClientProjectiles.set(playerId, playerProjectiles);
+            } else {
+                const previous = playerProjectiles.get(clientProjectileId);
+                if (previous && now - previous.timestamp < this.PROJECTILE_DEDUP_WINDOW) {
+                    previous.timestamp = now;
+                    // Ignore duplicate request, optionally resend latest authoritative state
+                    if (previous.payload) {
+                        const resend = previous.dead
+                            ? { ...previous.payload, dead: true, spawn: false }
+                            : previous.payload;
+                        previous.payload = resend;
+                        this.sendToPlayer(playerId, previous.payload);
+                    } else if (previous.serverId) {
+                        const existing = this.projectiles.find(p => p.id === previous.serverId);
+                        if (existing) {
+                            const ackPayload = {
+                                type: 'projectile',
+                                id: existing.id,
+                                x: existing.x,
+                                y: existing.y,
+                                vx: existing.vx,
+                                vy: existing.vy,
+                                type: existing.type,
+                                ownerId: existing.ownerId,
+                                clientProjectileId: clientProjectileId,
+                                lifetime: existing.lifetime,
+                                dead: !!existing.dead,
+                                spawn: false
+                            };
+                            previous.payload = ackPayload;
+                            previous.dead = !!existing.dead;
+                            this.sendToPlayer(playerId, ackPayload);
+                        } else {
+                            const expiredPayload = {
+                                type: 'projectile',
+                                id: previous.serverId,
+                                clientProjectileId: clientProjectileId,
+                                ownerId: playerId,
+                                dead: true,
+                                spawn: false
+                            };
+                            previous.payload = expiredPayload;
+                            previous.dead = true;
+                            this.sendToPlayer(playerId, expiredPayload);
+                        }
+                    }
+                    return;
+                }
+            }
+            playerProjectiles.set(clientProjectileId, {
+                timestamp: now,
+                serverId: null,
+                payload: null,
+                dead: false
+            });
+        }
+
         // Create server-side projectile
         const projectile = {
             id: this.generateProjectileId(),
@@ -328,10 +394,7 @@ class GameServer {
         };
         projectile.serverId = projectile.id;
 
-        this.projectiles.push(projectile);
-
-        // Broadcast to all clients
-        this.broadcast({
+        const projectilePayload = {
             type: 'projectile',
             id: projectile.id,
             x: projectile.x,
@@ -341,8 +404,34 @@ class GameServer {
             type: projectile.type,
             ownerId: playerId,
             lifetime: projectile.lifetime,
-            clientProjectileId: clientProjectileId
-        });
+            clientProjectileId: clientProjectileId,
+            spawn: true,
+            dead: false
+        };
+
+        if (clientProjectileId) {
+            const playerProjectiles = this.recentClientProjectiles.get(playerId);
+            if (playerProjectiles) {
+                const record = playerProjectiles.get(clientProjectileId);
+                if (record) {
+                    record.serverId = projectile.id;
+                    record.payload = { ...projectilePayload, spawn: false };
+                    record.dead = false;
+                } else {
+                    playerProjectiles.set(clientProjectileId, {
+                        timestamp: Date.now(),
+                        serverId: projectile.id,
+                        payload: { ...projectilePayload, spawn: false },
+                        dead: false
+                    });
+                }
+            }
+        }
+
+        this.projectiles.push(projectile);
+
+        // Broadcast to all clients
+        this.broadcast(projectilePayload);
     }
 
     validateProjectile(msg, player) {
@@ -528,6 +617,8 @@ class GameServer {
             proj.lifetime += this.FIXED_TIMESTEP;
 
             if (proj.lifetime > proj.maxLifetime) {
+                proj.dead = true;
+                this.markProjectileDead(proj);
                 this.projectiles.splice(i, 1);
                 continue;
             }
@@ -543,6 +634,8 @@ class GameServer {
             // Check collision with terrain
             if (this.terrain.isSolid(Math.floor(proj.x), Math.floor(proj.y))) {
                 this.explodeProjectile(proj);
+                proj.dead = true;
+                this.markProjectileDead(proj);
                 this.projectiles.splice(i, 1);
                 continue;
             }
@@ -566,6 +659,8 @@ class GameServer {
             }
 
             if (hitPlayer) {
+                proj.dead = true;
+                this.markProjectileDead(proj);
                 this.projectiles.splice(i, 1);
                 continue;
             }
@@ -573,6 +668,8 @@ class GameServer {
             // Bounds check
             if (proj.x < 0 || proj.x > this.WORLD_WIDTH || 
                 proj.y < 0 || proj.y > this.WORLD_HEIGHT) {
+                proj.dead = true;
+                this.markProjectileDead(proj);
                 this.projectiles.splice(i, 1);
             }
         }
@@ -730,10 +827,7 @@ class GameServer {
 
     broadcastState() {
         // Delta compression: only send changed data
-        const state = {
-            type: 'state',
-            tick: this.tick,
-            players: Array.from(this.players.values()).map(p => ({
+        const serializedPlayers = Array.from(this.players.values()).map(p => ({
                 id: p.id,
                 x: Math.round(p.x * 10) / 10, // Reduce precision for bandwidth
                 y: Math.round(p.y * 10) / 10,
@@ -744,8 +838,10 @@ class GameServer {
                 aimAngle: Math.round(p.aimAngle * 100) / 100,
                 selectedSpell: p.selectedSpell,
                 lastProcessedInput: p.lastProcessedInput
-            })),
-            projectiles: this.projectiles.map(proj => ({
+            }));
+
+        const serializedProjectiles = this.projectiles.map(proj => {
+            const serialized = {
                 id: proj.id,
                 x: proj.x,
                 y: proj.y,
@@ -754,8 +850,31 @@ class GameServer {
                 type: proj.type,
                 ownerId: proj.ownerId,
                 lifetime: proj.lifetime,
-                clientProjectileId: proj.clientProjectileId || null
-            })),
+                clientProjectileId: proj.clientProjectileId || null,
+                dead: !!proj.dead
+            };
+
+            if (serialized.clientProjectileId && serialized.ownerId) {
+                const ownerRecords = this.recentClientProjectiles.get(serialized.ownerId);
+                if (ownerRecords) {
+                    const record = ownerRecords.get(serialized.clientProjectileId);
+                    if (record) {
+                        record.serverId = serialized.id;
+                        record.payload = { ...serialized, spawn: false };
+                        record.dead = !!serialized.dead;
+                        record.timestamp = Date.now();
+                    }
+                }
+            }
+
+            return serialized;
+        });
+
+        const state = {
+            type: 'state',
+            tick: this.tick,
+            players: serializedPlayers,
+            projectiles: serializedProjectiles,
             projectileCount: this.projectiles.length,
             chunkCount: this.chunks.length
         };
@@ -825,8 +944,49 @@ class GameServer {
             if (player.ws.readyState === WebSocket.CLOSED) {
                 console.log(`🧹 Cleaning up disconnected player ${id}`);
                 this.players.delete(id);
+                this.recentClientProjectiles.delete(id);
             }
         }
+
+        // Trim dedupe cache
+        const now = Date.now();
+        for (const [playerId, entries] of this.recentClientProjectiles.entries()) {
+            if (!entries || entries.size === 0) {
+                this.recentClientProjectiles.delete(playerId);
+                continue;
+            }
+            for (const [clientId, record] of entries.entries()) {
+                if (!record || now - record.timestamp > this.PROJECTILE_DEDUP_WINDOW) {
+                    entries.delete(clientId);
+                }
+            }
+            if (entries.size === 0) {
+                this.recentClientProjectiles.delete(playerId);
+            }
+        }
+    }
+
+    markProjectileDead(projectile) {
+        if (!projectile || !projectile.ownerId || !projectile.clientProjectileId) return;
+        const ownerRecords = this.recentClientProjectiles.get(projectile.ownerId);
+        if (!ownerRecords) return;
+        const record = ownerRecords.get(projectile.clientProjectileId);
+        if (!record) return;
+
+        const payload = {
+            type: 'projectile',
+            id: projectile.id,
+            clientProjectileId: projectile.clientProjectileId,
+            ownerId: projectile.ownerId,
+            dead: true,
+            spawn: false
+        };
+
+        record.dead = true;
+        record.payload = payload;
+        record.timestamp = Date.now();
+
+        this.sendToPlayer(projectile.ownerId, payload);
     }
 
     logStats() {

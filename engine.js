@@ -64,6 +64,7 @@ class GameEngine {
         this.projectileChunkRadius = 1;
         this.maxComputedSandPriority = 1;
         this.network = null;
+        this.enableProjectileTrails = !!(options && options.enableProjectileTrails);
         this.serverStats = {
             players: 0,
             sand: 0,
@@ -1380,11 +1381,28 @@ class GameEngine {
             return [];
         }
 
-        const affectedSandChunks = new Set();
-        const chunks = this.terrain.destroy(wrappedX, y, radius);
+        const skipChunkProcessing = !this.isServer && !broadcast;
+        const stats = skipChunkProcessing ? { destroyed: 0 } : null;
+        const terrainOptions = skipChunkProcessing
+            ? { skipChunkProcessing: true, stats }
+            : undefined;
 
-        for (const chunkData of chunks) {
-            this.spawnSandFromPixels(chunkData, wrappedX, y, explosive, affectedSandChunks);
+        const affectedSandChunks = skipChunkProcessing ? null : new Set();
+        const chunks = this.terrain.destroy(wrappedX, y, radius, terrainOptions);
+
+        if (skipChunkProcessing) {
+            if (stats && stats.destroyed > 0) {
+                const estimated = Math.floor(stats.destroyed / 6) + 4;
+                const particleCount = Math.min(
+                    this.maxSandSpawnPerDestroy,
+                    Math.max(1, Math.min(stats.destroyed, estimated))
+                );
+                this.spawnParticles(wrappedX, y, particleCount, '#d4b483');
+            }
+        } else {
+            for (const chunkData of chunks) {
+                this.spawnSandFromPixels(chunkData, wrappedX, y, explosive, affectedSandChunks);
+            }
         }
 
         if (broadcast && this.network && typeof this.network.sendTerrainDestruction === 'function') {
@@ -1395,7 +1413,7 @@ class GameEngine {
             this.onTerrainDestruction({ x: wrappedX, y, radius, explosive, broadcast });
         }
 
-        if (affectedSandChunks.size > 0) {
+        if (affectedSandChunks && affectedSandChunks.size > 0) {
             this.flushDirtySandChunks(affectedSandChunks);
         }
 

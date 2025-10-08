@@ -110,7 +110,7 @@ class Projectile {
         }
         
         // Spawn trail particles for visual feedback
-        if (engine && typeof engine.spawnParticles === 'function') {
+        if (engine && engine.enableProjectileTrails && typeof engine.spawnParticles === 'function') {
             this.particleTimer += dt;
             if (this.particleTimer > 30) {
                 engine.spawnParticles(this.x, this.y, 2, this.color);

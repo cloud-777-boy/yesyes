@@ -559,7 +559,26 @@ class NetworkManager {
         const type = typeof msg.type === 'string' ? msg.type : 'fireball';
         const ownerId = typeof msg.ownerId === 'string' ? msg.ownerId : null;
 
+        const shouldSpawn = msg.spawn !== false;
+        const isDead = !!msg.dead;
+
         if (!projectile) {
+            if (!shouldSpawn) {
+                if (clientId) {
+                    this.localProjectiles.delete(clientId);
+                }
+                if (serverId && this.engine.projectiles && this.engine.projectiles.length) {
+                    const existingByServer = this.engine.projectiles.find(p => p && p.serverId === serverId);
+                    if (existingByServer) {
+                        existingByServer.pending = false;
+                        if (isDead) {
+                            existingByServer.dead = true;
+                        }
+                    }
+                }
+                return;
+            }
+
             projectile = this.engine.spawnProjectile(
                 normalizedX,
                 normalizedY,
@@ -587,12 +606,14 @@ class NetworkManager {
             }
         }
 
-        if (projectile && typeof msg.lifetime === 'number') {
-            projectile.lifetime = msg.lifetime;
-        }
-
         if (projectile) {
+            if (typeof msg.lifetime === 'number') {
+                projectile.lifetime = msg.lifetime;
+            }
             projectile.pending = false;
+            if (isDead) {
+                projectile.dead = true;
+            }
         }
     }
 
