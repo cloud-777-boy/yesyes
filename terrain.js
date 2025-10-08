@@ -153,6 +153,15 @@ class Terrain {
         this.chunkRetentionTicks = 1800; // ~30 seconds at 60Hz to avoid thrash
         this.maxChunkUnloadPerUpdate = 4;
         this.maxChunkLoadPerUpdate = 2;
+        this.unloadedChunkStore = null;
+        this.unloadedChunkLRU = new Map();
+        this.maxStoredChunks = 2048;
+        this.staticChunks = new Set();
+        this.pendingStaticChunkKeys = new Set();
+        this.staticChunkInvalidations = new Set();
+        this.staticChunkThreshold = 5400;
+        this.pendingRegionLoads = new Map();
+        this.regionLoadCooldown = 0;
         this.resetChunkStreamingState();
     }
 
@@ -180,6 +189,15 @@ class Terrain {
             this.unloadedChunks.clear();
         }
 
+        if (!this.unloadedChunkStore) {
+            this.unloadedChunkStore = new Map();
+        }
+        if (!this.unloadedChunkLRU) {
+            this.unloadedChunkLRU = new Map();
+        }
+        this.unloadedChunkStore.clear();
+        this.unloadedChunkLRU.clear();
+
         if (!this.loadedChunks) {
             this.loadedChunks = new Set();
         } else {
@@ -201,15 +219,31 @@ class Terrain {
                 this.chunkLastActive.set(key, 0);
             }
         }
+
+        if (this.staticChunks) {
+            this.staticChunks.clear();
+        }
+        if (this.pendingStaticChunkKeys) {
+            this.pendingStaticChunkKeys.clear();
+        }
+        if (this.staticChunkInvalidations) {
+            this.staticChunkInvalidations.clear();
+        }
+        if (this.pendingRegionLoads) {
+            this.pendingRegionLoads.clear();
+        }
+        this.regionLoadCooldown = 0;
     }
 
     ensureChunkLoadedForCoordinates(x, y) {
-        if (!this.unloadedChunks || this.unloadedChunks.size === 0) return;
+        const hasMemory = this.unloadedChunks && this.unloadedChunks.size > 0;
+        const hasStore = this.unloadedChunkStore && this.unloadedChunkStore.size > 0;
+        if (!hasMemory && !hasStore) return;
         if (y < 0 || y >= this.height) return;
         const chunkX = Math.floor(x / this.chunkSize);
         const chunkY = Math.floor(y / this.chunkSize);
         const key = `${chunkX}|${chunkY}`;
-        if (this.unloadedChunks.has(key)) {
+        if (this.unloadedChunks.has(key) || this.unloadedChunkStore.has(key)) {
             this.loadChunkByKey(key);
         }
     }
@@ -244,7 +278,9 @@ class Terrain {
                         return budget - remainingBudget;
                     }
                     const key = `${chunkX}|${chunkY}`;
-                    if (this.unloadedChunks.has(key) && this.loadChunkByKey(key)) {
+                    const hasStored = (this.unloadedChunks && this.unloadedChunks.has(key))
+                        || (this.unloadedChunkStore && this.unloadedChunkStore.has(key));
+                    if (hasStored && this.loadChunkByKey(key)) {
                         remainingBudget--;
                     }
                 }
@@ -275,7 +311,9 @@ class Terrain {
                         return budget - remainingBudget;
                     }
                     const key = `${wrappedChunkX}|${chunkY}`;
-                    if (this.unloadedChunks.has(key) && this.loadChunkByKey(key)) {
+                    const hasStored = (this.unloadedChunks && this.unloadedChunks.has(key))
+                        || (this.unloadedChunkStore && this.unloadedChunkStore.has(key));
+                    if (hasStored && this.loadChunkByKey(key)) {
                         remainingBudget--;
                     }
                 }
@@ -305,7 +343,14 @@ class Terrain {
             return false;
         }
 
-        const data = this.unloadedChunks.get(key);
+        let data = this.unloadedChunks.get(key);
+        if (!data && this.unloadedChunkStore) {
+            data = this.unloadedChunkStore.get(key);
+            if (data) {
+                this.unloadedChunkLRU.set(key, Date.now());
+            }
+        }
+
         if (!data) {
             return false;
         }
@@ -360,6 +405,9 @@ class Terrain {
         if (this.loadedChunks) {
             this.loadedChunks.add(key);
         }
+        if (!this.unloadedChunkStore || !this.unloadedChunkStore.has(key)) {
+            this.storeChunkBuffer(key, data);
+        }
         const minX = Math.max(0, startX);
         const maxX = Math.min(this.width - 1, startX + chunkSize - 1);
         const minY = Math.max(0, startY);
@@ -367,6 +415,98 @@ class Terrain {
         this.rebuildSurfaceColumns(minX, maxX);
         this.markDirtyRegion(minX, minY, maxX, maxY);
         return true;
+    }
+
+    storeChunkBuffer(key, buffer) {
+        if (!buffer) return;
+        if (!this.unloadedChunkStore) {
+            this.unloadedChunkStore = new Map();
+        }
+        if (!this.unloadedChunkLRU) {
+            this.unloadedChunkLRU = new Map();
+        }
+
+        const stamp = Date.now();
+        this.unloadedChunkStore.set(key, buffer);
+        this.unloadedChunkLRU.set(key, stamp);
+
+        if (this.unloadedChunkLRU.size > this.maxStoredChunks) {
+            let oldestKey = null;
+            let oldestStamp = Infinity;
+            for (const [storedKey, storedStamp] of this.unloadedChunkLRU.entries()) {
+                if (storedStamp < oldestStamp) {
+                    oldestStamp = storedStamp;
+                    oldestKey = storedKey;
+                }
+            }
+            if (oldestKey && !(this.unloadedChunks && this.unloadedChunks.has(oldestKey))) {
+                this.unloadedChunkLRU.delete(oldestKey);
+                this.unloadedChunkStore.delete(oldestKey);
+            }
+        }
+    }
+
+    markChunkStatic(key) {
+        if (!key) return;
+        if (!this.staticChunks.has(key)) {
+            this.staticChunks.add(key);
+            this.pendingStaticChunkKeys.add(key);
+        }
+    }
+
+    unmarkChunkStatic(key) {
+        if (!key) return;
+        const wasStatic = this.staticChunks.delete(key);
+        const wasPending = this.pendingStaticChunkKeys.delete(key);
+        if (wasStatic && !wasPending) {
+            this.staticChunkInvalidations.add(key);
+        }
+    }
+
+    collectStaticChunkUpdates(limit = 8) {
+        const result = {};
+
+        if (this.pendingStaticChunkKeys.size) {
+            const keys = [];
+            for (const key of this.pendingStaticChunkKeys) {
+                keys.push(key);
+                if (keys.length >= limit) {
+                    break;
+                }
+            }
+            if (keys.length) {
+                const snapshot = this.serializeChunksForKeys(keys);
+                if (snapshot && snapshot.chunks && snapshot.chunks.length) {
+                    snapshot.static = true;
+                    result.static = snapshot;
+                    for (const chunk of snapshot.chunks) {
+                        this.pendingStaticChunkKeys.delete(chunk.key);
+                    }
+                } else {
+                    for (const key of keys) {
+                        this.pendingStaticChunkKeys.delete(key);
+                    }
+                }
+            }
+        }
+
+        if (this.staticChunkInvalidations.size) {
+            const invalidations = [];
+            for (const key of this.staticChunkInvalidations) {
+                invalidations.push(key);
+                if (invalidations.length >= limit) {
+                    break;
+                }
+            }
+            if (invalidations.length) {
+                result.invalidate = invalidations;
+                for (const key of invalidations) {
+                    this.staticChunkInvalidations.delete(key);
+                }
+            }
+        }
+
+        return result.static || result.invalidate ? result : null;
     }
 
     unloadChunkByKey(key) {
@@ -398,9 +538,13 @@ class Terrain {
         const startY = chunkY * chunkSize;
         const width = this.width;
         const height = this.height;
-        let buffer = this.unloadedChunks ? this.unloadedChunks.get(key) : null;
-        if (!buffer || buffer.length !== chunkSize * chunkSize) {
-            buffer = new Uint8Array(chunkSize * chunkSize);
+        let buffer = (this.unloadedChunks && this.unloadedChunks.get(key)) || null;
+        if (!buffer && this.unloadedChunkStore) {
+            buffer = this.unloadedChunkStore.get(key) || null;
+        }
+        const expectedSize = chunkSize * chunkSize;
+        if (!buffer || buffer.length !== expectedSize) {
+            buffer = new Uint8Array(expectedSize);
         }
 
         let index = 0;
@@ -428,6 +572,7 @@ class Terrain {
             this.unloadedChunks = new Map();
         }
         this.unloadedChunks.set(key, buffer);
+        this.storeChunkBuffer(key, buffer);
         this.loadedChunks.delete(key);
         if (this.modifiedChunks) {
             this.modifiedChunks.delete(key);
@@ -478,6 +623,7 @@ class Terrain {
             for (const key of activeSet) {
                 if (!key) continue;
                 this.chunkLastActive.set(key, nowTick);
+                this.unmarkChunkStatic(key);
                 if (this.unloadedChunks && this.unloadedChunks.has(key)) {
                     if (loads < this.maxChunkLoadPerUpdate) {
                         if (this.loadChunkByKey(key)) {
@@ -514,6 +660,9 @@ class Terrain {
         for (const key of this.loadedChunks) {
             if (activeSet.has(key)) continue;
             const lastActive = this.chunkLastActive.get(key) || -Infinity;
+            if (!activeSet.has(key) && (nowTick - lastActive) >= this.staticChunkThreshold) {
+                this.markChunkStatic(key);
+            }
             if (nowTick - lastActive < this.chunkRetentionTicks) {
                 continue;
             }
@@ -788,8 +937,14 @@ class Terrain {
         
         centerX = Math.floor(centerX);
         centerY = Math.floor(centerY);
-        this.ensureRegionLoaded(centerX - radius - this.chunkSize, centerY - radius - this.chunkSize,
-            centerX + radius + this.chunkSize, centerY + radius + this.chunkSize);
+        this.ensureRegionLoaded(
+            centerX - radius - this.chunkSize,
+            centerY - radius - this.chunkSize,
+            centerX + radius + this.chunkSize,
+            centerY + this.chunkSize + radius,
+            this.maxChunkLoadPerUpdate,
+            'destroy'
+        );
 
         let dirtyMinX = Infinity;
         let dirtyMinY = Infinity;
@@ -1201,6 +1356,7 @@ class Terrain {
             record = { pixels: new Map() };
             this.modifiedChunks.set(key, record);
         }
+        this.unmarkChunkStatic(key);
         let localX = x % this.chunkSize;
         let localY = y % this.chunkSize;
         if (localX < 0) localX += this.chunkSize;
@@ -1275,7 +1431,10 @@ class Terrain {
             chunkY = Math.max(0, Math.min(totalChunksY - 1, chunkY));
 
             const buffer = new Uint8Array(chunkSize * chunkSize);
-            const stored = this.unloadedChunks ? this.unloadedChunks.get(`${chunkX}|${chunkY}`) : null;
+            const storedKey = `${chunkX}|${chunkY}`;
+            const stored = (this.unloadedChunks && this.unloadedChunks.get(storedKey))
+                || (this.unloadedChunkStore && this.unloadedChunkStore.get(storedKey))
+                || null;
 
             if (stored && stored.length === buffer.length) {
                 buffer.set(stored);
@@ -1294,7 +1453,7 @@ class Terrain {
             }
 
             chunks.push({
-                key: `${chunkX}|${chunkY}`,
+                key: storedKey,
                 data: encodeBytesToBase64(buffer)
             });
         }
@@ -1333,6 +1492,7 @@ class Terrain {
 
             const chunkKey = `${chunkX}|${chunkY}`;
             this.loadChunkByKey(chunkKey);
+            this.unmarkChunkStatic(chunkKey);
 
             const dataString = entry.data;
             if (typeof dataString !== 'string' || dataString.length === 0) continue;

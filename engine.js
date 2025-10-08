@@ -23,9 +23,12 @@ class GameEngine {
             ? new DeterministicRandom(this.seed)
             : fallbackRandom;
 
+        const configuredWidth = options && Number.isFinite(options.width) ? Math.floor(options.width) : null;
+        const configuredHeight = options && Number.isFinite(options.height) ? Math.floor(options.height) : null;
+
         // Core systems
-        this.width = 11200;
-        this.height = 900;
+        this.width = configuredWidth && configuredWidth > 0 ? configuredWidth : 11200;
+        this.height = configuredHeight && configuredHeight > 0 ? configuredHeight : 900;
         this.pixelSize = 6; // Render scale (zoomed-in view)
         
         this.terrain = null;
@@ -447,42 +450,52 @@ class GameEngine {
         }
     }
 
-    update(dt) {
+    update(dt, options = {}) {
+        const skipSand = !!options.skipSand;
+        const skipEntities = !!options.skipEntities;
+        const skipParticles = !!options.skipParticles;
+        const entityKeys = options.entityKeys || null;
         const { width: viewWidth, height: viewHeight } = this.getViewDimensions();
         this.updateActiveChunks(viewWidth, viewHeight);
         this.spawnPendingFluids(false);
 
         if (!this.isServer) {
-            if (this.inputManager && typeof this.inputManager.update === 'function') {
+            if (!skipEntities && this.inputManager && typeof this.inputManager.update === 'function') {
                 this.inputManager.update();
             }
-            const localPlayer = this.playerId ? this.players.get(this.playerId) : null;
-            if (localPlayer) {
-                localPlayer.update(dt, this);
-                if (this.network && typeof this.network.recordLocalState === 'function') {
-                    this.network.recordLocalState(this.tick, localPlayer);
-                }
-            } else if (!this.network) {
-                const players = this.playerList;
-                for (let i = 0; i < players.length; i++) {
-                    players[i].update(dt, this);
-                }
-            }
-
-            for (let i = this.projectiles.length - 1; i >= 0; i--) {
-                const proj = this.projectiles[i];
-                proj.update(dt, this);
-                if (proj.dead) {
-                    this.projectiles.splice(i, 1);
+            if (!skipEntities) {
+                const localPlayer = this.playerId ? this.players.get(this.playerId) : null;
+                if (localPlayer) {
+                    localPlayer.update(dt, this);
+                    if (this.network && typeof this.network.recordLocalState === 'function') {
+                        this.network.recordLocalState(this.tick, localPlayer);
+                    }
+                } else if (!this.network) {
+                    const players = this.playerList;
+                    for (let i = 0; i < players.length; i++) {
+                        players[i].update(dt, this);
+                    }
                 }
             }
 
-            for (let i = this.particles.length - 1; i >= 0; i--) {
-                const particle = this.particles[i];
-                particle.update(dt, this.width);
-                if (particle.dead) {
-                    this.returnParticleToPool(particle);
-                    this.particles.splice(i, 1);
+            if (!skipEntities) {
+                for (let i = this.projectiles.length - 1; i >= 0; i--) {
+                    const proj = this.projectiles[i];
+                    proj.update(dt, this);
+                    if (proj.dead) {
+                        this.projectiles.splice(i, 1);
+                    }
+                }
+            }
+
+            if (!skipParticles) {
+                for (let i = this.particles.length - 1; i >= 0; i--) {
+                    const particle = this.particles[i];
+                    particle.update(dt, this.width);
+                    if (particle.dead) {
+                        this.returnParticleToPool(particle);
+                        this.particles.splice(i, 1);
+                    }
                 }
             }
             return;
@@ -492,25 +505,15 @@ class GameEngine {
             this.eigenSand.updateChunks(this.activeSandChunkPriority);
         }
 
-        // Update players
-        const players = this.playerList;
-        for (let i = 0; i < players.length; i++) {
-            players[i].update(dt, this);
-        }
-
-        // Update projectiles
-        for (let i = this.projectiles.length - 1; i >= 0; i--) {
-            const proj = this.projectiles[i];
-            proj.update(dt, this);
-
-            if (proj.dead) {
-                this.projectiles.splice(i, 1);
-            }
+        if (!skipEntities) {
+            this.updateEntities(dt, entityKeys);
         }
 
         // Update falling sand (server-authoritative)
         if (this.isServer) {
-            this.updateSand(dt);
+            if (!skipSand) {
+                this.updateSand(dt);
+            }
         } else {
             // Client-side: extrapolate sand positions using velocity for smooth rendering
             for (let i = 0; i < this.activeSandLookup.length; i++) {
@@ -522,14 +525,15 @@ class GameEngine {
             }
         }
 
-        // Update particles
-        for (let i = this.particles.length - 1; i >= 0; i--) {
-            const particle = this.particles[i];
-            particle.update(dt, this.width);
+        if (!skipParticles) {
+            for (let i = this.particles.length - 1; i >= 0; i--) {
+                const particle = this.particles[i];
+                particle.update(dt, this.width);
 
-            if (particle.dead) {
-                this.returnParticleToPool(particle);
-                this.particles.splice(i, 1);
+                if (particle.dead) {
+                    this.returnParticleToPool(particle);
+                    this.particles.splice(i, 1);
+                }
             }
         }
     }
@@ -1682,7 +1686,8 @@ class GameEngine {
         return payload.chunks.length > 0 ? payload : null;
     }
 
-    serializeSandChunks(activeOnly = false) {
+    serializeSandChunks(activeOnly = false, options = {}) {
+        const includeState = !!options.includeState;
         const payload = {
             chunkSize: this.chunkSize,
             chunks: [],
@@ -1695,7 +1700,7 @@ class GameEngine {
                     if (!list.length) continue;
                     payload.chunks.push({
                         key,
-                        particles: list.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, material: p.material, color: p.color }))
+                        particles: list.map((p) => this.serializeSandParticle(p, includeState))
                     });
                 }
             } else {
@@ -1705,7 +1710,7 @@ class GameEngine {
                     if (!list.length) continue;
                     payload.chunks.push({
                         key,
-                        particles: list.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, material: p.material, color: p.color }))
+                        particles: list.map((p) => this.serializeSandParticle(p, includeState))
                     });
                 }
             }
@@ -1714,16 +1719,21 @@ class GameEngine {
                 if (!list.length) continue;
                 payload.chunks.push({
                     key,
-                    particles: list.map(p => ({ x: p.x, y: p.y, material: p.material, color: p.color }))
+                    particles: list.map((p) => this.serializeSandParticle(p, includeState))
                 });
             }
+        }
+
+        if (includeState && payload.chunks.length) {
+            payload.includeState = true;
         }
 
         return payload.chunks.length ? payload : null;
     }
 
-    serializeSandChunksForKeys(keys) {
+    serializeSandChunksForKeys(keys, options = {}) {
         if (!keys || typeof keys[Symbol.iterator] !== 'function') return null;
+        const includeState = !!options.includeState;
         const chunks = [];
         for (const key of keys) {
             if (key === null || key === undefined) continue;
@@ -1738,15 +1748,244 @@ class GameEngine {
             }
             chunks.push({
                 key: normalizedKey,
-                particles: list.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, material: p.material, color: p.color }))
+                particles: list.map((p) => this.serializeSandParticle(p, includeState))
             });
         }
         if (chunks.length === 0) return null;
-        return {
+        const payload = {
             chunkSize: this.chunkSize,
             chunks,
             full: false
         };
+        if (includeState) {
+            payload.includeState = true;
+        }
+        return payload;
+    }
+
+    serializeSandParticle(particle, includeState = false) {
+        const base = {
+            x: particle.x,
+            y: particle.y,
+            vx: particle.vx || 0,
+            vy: particle.vy || 0,
+            material: particle.material,
+            color: particle.color
+        };
+        if (includeState) {
+            base.restTime = particle.restTime || 0;
+            base.settleDelay = particle.settleDelay || 0;
+            base.drift = particle.drift || 0;
+            base.mass = particle.mass || 1;
+            base.isLiquid = !!particle.isLiquid;
+            base.dead = !!particle.dead;
+            base.updateInterval = particle.updateInterval || 1;
+            base.nextUpdateTick = particle.nextUpdateTick || 0;
+            base.activityLevel = particle.activityLevel || 0;
+            base.chunkPriority = particle.chunkPriority || 3;
+            base.blobId = particle.blobId ?? -1;
+            base.lastBlobId = particle.lastBlobId ?? -1;
+        }
+        return base;
+    }
+
+    updateEntities(dt, entityKeys = null) {
+        const filter = entityKeys ? new Set(entityKeys) : null;
+
+        const shouldProcessPlayer = (player) => {
+            if (!filter) return true;
+            const key = this.getChunkKeyForPosition(player.x, player.y);
+            return key ? filter.has(key) : false;
+        };
+
+        const players = this.playerList;
+        for (let i = 0; i < players.length; i++) {
+            const player = players[i];
+            if (!player) continue;
+            if (filter && !shouldProcessPlayer(player)) {
+                continue;
+            }
+            player.update(dt, this);
+        }
+
+        const shouldProcessProjectile = (proj) => {
+            if (!filter) return true;
+            const key = this.getChunkKeyForPosition(proj.x, proj.y);
+            return key ? filter.has(key) : false;
+        };
+
+        for (let i = this.projectiles.length - 1; i >= 0; i--) {
+            const proj = this.projectiles[i];
+            if (!proj) continue;
+            if (filter && !shouldProcessProjectile(proj)) {
+                continue;
+            }
+            proj.update(dt, this);
+            if (proj.dead) {
+                this.projectiles.splice(i, 1);
+            }
+        }
+    }
+
+    serializeEntities(entityKeys = null, includeInputs = true) {
+        const filter = entityKeys ? new Set(entityKeys) : null;
+        const payload = {
+            players: [],
+            projectiles: []
+        };
+
+        const shouldInclude = (key) => {
+            if (!filter) return true;
+            return key ? filter.has(key) : false;
+        };
+
+        for (let i = 0; i < this.playerList.length; i++) {
+            const player = this.playerList[i];
+            if (!player) continue;
+            const chunkKey = this.getChunkKeyForPosition(player.x, player.y);
+            if (!shouldInclude(chunkKey)) continue;
+            const data = {
+                id: player.id,
+                chunkKey,
+                x: player.x,
+                y: player.y,
+                vx: player.vx || 0,
+                vy: player.vy || 0,
+                alive: !!player.alive,
+                health: player.health,
+                maxHealth: player.maxHealth,
+                grounded: !!player.grounded,
+                aimAngle: player.aimAngle,
+                selectedSpell: player.selectedSpell,
+                width: player.width,
+                height: player.height,
+                facing: player.facing || 1
+            };
+            if (includeInputs && player.input) {
+                data.input = {
+                    left: !!player.input.left,
+                    right: !!player.input.right,
+                    jump: !!player.input.jump,
+                    shoot: !!player.input.shoot,
+                    mouseX: player.input.mouseX ?? player.x,
+                    mouseY: player.input.mouseY ?? player.y,
+                    selectedSpell: player.input.selectedSpell ?? player.selectedSpell
+                };
+            }
+            payload.players.push(data);
+        }
+
+        for (let i = 0; i < this.projectiles.length; i++) {
+            const proj = this.projectiles[i];
+            if (!proj) continue;
+            const chunkKey = this.getChunkKeyForPosition(proj.x, proj.y);
+            if (!shouldInclude(chunkKey)) continue;
+            payload.projectiles.push({
+                id: proj.serverId || null,
+                chunkKey,
+                x: proj.x,
+                y: proj.y,
+                vx: proj.vx,
+                vy: proj.vy,
+                type: proj.type,
+                ownerId: proj.ownerId,
+                lifetime: proj.lifetime,
+                maxLifetime: proj.maxLifetime,
+                dead: !!proj.dead,
+                radius: proj.radius,
+                mass: proj.mass
+            });
+        }
+
+        return payload;
+    }
+
+    applyEntitySnapshot(snapshot) {
+        if (!snapshot || typeof snapshot !== 'object') return;
+        const playersData = Array.isArray(snapshot.players) ? snapshot.players : [];
+        const projectilesData = Array.isArray(snapshot.projectiles) ? snapshot.projectiles : [];
+
+        const playerMap = this.players;
+
+        for (let i = 0; i < playersData.length; i++) {
+            const data = playersData[i];
+            if (!data || typeof data.id !== 'string') continue;
+            let player = playerMap.get(data.id);
+            if (!player) {
+                player = this.addPlayer(data.id, data.x || 0, data.y || 0, data.selectedSpell || 0);
+            }
+            if (!player) continue;
+
+            player.x = data.x;
+            player.y = data.y;
+            player.vx = data.vx || 0;
+            player.vy = data.vy || 0;
+            player.alive = data.alive !== undefined ? !!data.alive : player.alive;
+            if (typeof data.health === 'number') player.health = data.health;
+            if (typeof data.maxHealth === 'number') player.maxHealth = data.maxHealth;
+            player.grounded = data.grounded !== undefined ? !!data.grounded : player.grounded;
+            if (typeof data.aimAngle === 'number') player.aimAngle = data.aimAngle;
+            if (data.selectedSpell !== undefined) player.selectedSpell = data.selectedSpell;
+            if (typeof data.width === 'number') player.width = data.width;
+            if (typeof data.height === 'number') player.height = data.height;
+            if (data.facing !== undefined) player.facing = data.facing;
+
+            if (data.input) {
+                player.input = {
+                    left: !!data.input.left,
+                    right: !!data.input.right,
+                    jump: !!data.input.jump,
+                    shoot: !!data.input.shoot,
+                    mouseX: typeof data.input.mouseX === 'number' ? data.input.mouseX : player.x,
+                    mouseY: typeof data.input.mouseY === 'number' ? data.input.mouseY : player.y,
+                    selectedSpell: typeof data.input.selectedSpell === 'number'
+                        ? data.input.selectedSpell
+                        : player.selectedSpell
+                };
+            }
+        }
+
+        const projectileById = new Map();
+        for (let i = 0; i < this.projectiles.length; i++) {
+            const proj = this.projectiles[i];
+            if (proj && proj.serverId) {
+                projectileById.set(proj.serverId, proj);
+            }
+        }
+
+        for (let i = 0; i < projectilesData.length; i++) {
+            const data = projectilesData[i];
+            if (!data) continue;
+            const id = data.id || null;
+            let proj = id ? projectileById.get(id) : null;
+            if (!proj) {
+                proj = new Projectile(
+                    data.x || 0,
+                    data.y || 0,
+                    data.vx || 0,
+                    data.vy || 0,
+                    data.type || 'fireball',
+                    data.ownerId || null
+                );
+                if (id) {
+                    proj.serverId = id;
+                    projectileById.set(id, proj);
+                }
+                this.projectiles.push(proj);
+            }
+
+            proj.x = data.x || 0;
+            proj.y = data.y || 0;
+            proj.vx = data.vx || 0;
+            proj.vy = data.vy || 0;
+            proj.type = data.type || proj.type;
+            proj.ownerId = data.ownerId || proj.ownerId;
+            if (typeof data.lifetime === 'number') proj.lifetime = data.lifetime;
+            if (typeof data.maxLifetime === 'number') proj.maxLifetime = data.maxLifetime;
+            proj.dead = data.dead !== undefined ? !!data.dead : proj.dead;
+            if (typeof data.radius === 'number') proj.radius = data.radius;
+            if (typeof data.mass === 'number') proj.mass = data.mass;
+        }
     }
 
     serializeTerrainChunksForKeys(keys, options = {}) {
@@ -1877,6 +2116,13 @@ class GameEngine {
         return terrain.serializeChunksForKeys(normalizedKeys);
     }
 
+    pullStaticTerrainUpdates(limit = 8) {
+        if (!this.terrain || typeof this.terrain.collectStaticChunkUpdates !== 'function') {
+            return null;
+        }
+        return this.terrain.collectStaticChunkUpdates(limit);
+    }
+
     getActiveTerrainChunkSet(chunkSize) {
         if (!this.isServer) {
             return null;
@@ -1986,6 +2232,7 @@ class GameEngine {
         const totalChunksX = Math.ceil(this.width / this.chunkSize);
         const maxChunkY = Math.ceil(this.height / this.chunkSize) - 1;
 
+        const includeState = !!snapshot.includeState;
         const entries = snapshot.chunks;
         let pendingParticles = 0;
         for (let i = 0; i < entries.length; i++) {
@@ -2026,16 +2273,30 @@ class GameEngine {
                 }
                 const data = particles[j];
                 if (typeof data.x !== 'number' || typeof data.y !== 'number') continue;
-                const sand = this.getSandParticleFromPool();
                 const material = typeof data.material === 'number' ? data.material : this.terrain.DIRT;
                 const props = this.terrain.substances[material] || {};
-                const mass = typeof props.density === 'number' ? props.density : 1;
-                const isLiquid = props.type === 'liquid';
+                const massDefault = typeof props.density === 'number' ? props.density : 1;
+                const isLiquidDefault = props.type === 'liquid';
+                const sand = this.getSandParticleFromPool();
                 const vx = typeof data.vx === 'number' ? data.vx : 0;
                 const vy = typeof data.vy === 'number' ? data.vy : 0;
-                sand.init(data.x, data.y, material, data.color || '#ffffff', 0, mass, isLiquid);
+                sand.init(data.x, data.y, material, data.color || '#ffffff', 0, massDefault, isLiquidDefault);
                 sand.vx = vx;
                 sand.vy = vy;
+                if (includeState) {
+                    if (typeof data.restTime === 'number') sand.restTime = data.restTime;
+                    if (typeof data.settleDelay === 'number') sand.settleDelay = data.settleDelay;
+                    if (typeof data.drift === 'number') sand.drift = data.drift;
+                    if (typeof data.mass === 'number') sand.mass = data.mass;
+                    if (typeof data.isLiquid === 'boolean') sand.isLiquid = data.isLiquid;
+                    if (typeof data.dead === 'boolean') sand.dead = data.dead;
+                    if (typeof data.updateInterval === 'number') sand.updateInterval = data.updateInterval;
+                    if (typeof data.nextUpdateTick === 'number') sand.nextUpdateTick = data.nextUpdateTick;
+                    if (typeof data.activityLevel === 'number') sand.activityLevel = data.activityLevel;
+                    if (typeof data.chunkPriority === 'number') sand.chunkPriority = data.chunkPriority;
+                    if (typeof data.blobId === 'number') sand.blobId = data.blobId;
+                    if (typeof data.lastBlobId === 'number') sand.lastBlobId = data.lastBlobId;
+                }
                 this.addSandToChunk(sand, chunkX, chunkY);
                 this.sandParticleCount++;
             }

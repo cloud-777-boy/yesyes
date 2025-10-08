@@ -1,4 +1,5 @@
-const { parentPort, workerData } = require('worker_threads');
+const { parentPort, workerData, Worker } = require('worker_threads');
+const path = require('path');
 const DeterministicRandom = require('./deterministic.js');
 require('./terrain.js');
 require('./physics.js');
@@ -52,6 +53,21 @@ class SimulationCore {
         this.tick = 0;
 
         this.sandUpdateAccumulator = 0;
+
+        this.sandWorker = null;
+        this.sandWorkerRequests = new Map();
+        this.nextSandRequestId = 1;
+        this.sandReadyPromise = null;
+
+        this.physicsRunning = false;
+        this.staticTerrainStore = new Map();
+        this.entityWorker = null;
+        this.entityWorkerRequests = new Map();
+        this.nextEntityRequestId = 1;
+        this.entityReadyPromise = null;
+        this.tickIntervalMs = 1000 / this.tickRate;
+        this.dropParticlesUntil = 0;
+        this.lastUpdateDuration = 0;
     }
 
     emit(event, data) {
@@ -72,6 +88,10 @@ class SimulationCore {
 
         this.engine.init();
         this.sandChunkRadius = Math.max(1, serverComputeRadius + serverBufferRadius);
+
+        if (this.staticTerrainStore) {
+            this.staticTerrainStore.clear();
+        }
 
         this.engine.onProjectileSpawn = (projectile) => this.handleServerProjectileSpawn(projectile);
         this.engine.onTerrainDestruction = ({ x, y, radius, explosive, broadcast }) => {
@@ -96,6 +116,9 @@ class SimulationCore {
         this.terrainSnapshot = this.engine.getTerrainSnapshot();
         this.tick = this.engine.tick;
         this.terrainSnapshotTick = this.tick;
+
+        this.setupSandWorker();
+        this.setupEntityWorker();
     }
 
     startLoops() {
@@ -106,11 +129,9 @@ class SimulationCore {
         if (this.stateTimer) clearInterval(this.stateTimer);
 
         this.tickTimer = setInterval(() => {
-            try {
-                this.updatePhysics();
-            } catch (err) {
+            this.updatePhysics().catch((err) => {
                 this.emit('error', { scope: 'updatePhysics', message: err.message, stack: err.stack });
-            }
+            });
         }, tickInterval);
 
         this.stateTimer = setInterval(() => {
@@ -126,13 +147,350 @@ class SimulationCore {
         }, 10000);
     }
 
-    updatePhysics() {
-        if (!this.engine) return;
-        const dt = this.engine.fixedTimeStep || (1000 / this.tickRate);
-        this.engine.update(dt);
-        this.engine.tick += 1;
-        this.tick = this.engine.tick;
-        this.broadcastPendingSandUpdate();
+    setupSandWorker() {
+        if (this.sandWorker || !this.engine) {
+            return;
+        }
+
+        const sandConfig = {
+            seed: this.seed,
+            width: this.engine.width,
+            height: this.engine.height,
+            chunkSize: this.engine.chunkSize,
+            terrainSnapshot: this.terrainSnapshot
+        };
+
+        const workerPath = path.resolve(__dirname, 'sandWorker.js');
+        this.sandWorker = new Worker(workerPath, { workerData: sandConfig });
+
+        this.sandWorker.on('message', (msg) => this.handleSandWorkerMessage(msg));
+        this.sandWorker.on('error', (error) => {
+            this.emit('error', { scope: 'sandWorker', message: error.message, stack: error.stack });
+        });
+        this.sandWorker.on('exit', (code) => {
+            if (code !== 0) {
+                this.emit('error', { scope: 'sandWorker', message: `sand worker exited with code ${code}` });
+            }
+            this.sandWorker = null;
+        });
+
+        this.sandReadyPromise = this.postToSandWorker('init', sandConfig)
+            .catch((error) => {
+                this.emit('error', { scope: 'sandWorker', message: error.message, stack: error.stack });
+                throw error;
+            });
+    }
+
+    handleSandWorkerMessage(msg) {
+        if (!msg || typeof msg !== 'object') return;
+
+        if (msg.type === 'response') {
+            const pending = this.sandWorkerRequests.get(msg.requestId);
+            if (!pending) return;
+            this.sandWorkerRequests.delete(msg.requestId);
+            clearTimeout(pending.timeout);
+            pending.resolve(msg.data);
+            return;
+        }
+
+        if (msg.type === 'event') {
+            // No event types defined yet, reserve for future instrumentation
+            if (msg.event === 'error' && msg.data) {
+                this.emit('error', { scope: 'sandWorker', ...msg.data });
+            }
+        }
+    }
+
+    postToSandWorker(type, payload = {}, expectResponse = true) {
+        if (!this.sandWorker) {
+            return Promise.reject(new Error('Sand worker not ready'));
+        }
+
+        if (!expectResponse) {
+            this.sandWorker.postMessage({ type, payload });
+            return Promise.resolve();
+        }
+
+        const requestId = this.nextSandRequestId++;
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                this.sandWorkerRequests.delete(requestId);
+                reject(new Error(`Sand worker request "${type}" timed out`));
+            }, 5000);
+
+            this.sandWorkerRequests.set(requestId, { resolve, reject, timeout });
+            this.sandWorker.postMessage({ type, payload, requestId });
+        });
+    }
+
+    async ensureSandWorkerReady() {
+        if (this.sandReadyPromise) {
+            await this.sandReadyPromise;
+            this.sandReadyPromise = null;
+        }
+    }
+
+    setupEntityWorker() {
+        if (this.entityWorker || !this.engine) {
+            return;
+        }
+
+        const entityConfig = {
+            seed: this.seed,
+            width: this.engine.width,
+            height: this.engine.height,
+            chunkSize: this.engine.chunkSize,
+            terrainSnapshot: this.terrainSnapshot
+        };
+
+        const workerPath = path.resolve(__dirname, 'entityWorker.js');
+        this.entityWorker = new Worker(workerPath, { workerData: entityConfig });
+
+        this.entityWorker.on('message', (msg) => this.handleEntityWorkerMessage(msg));
+        this.entityWorker.on('error', (error) => {
+            this.emit('error', { scope: 'entityWorker', message: error.message, stack: error.stack });
+        });
+        this.entityWorker.on('exit', (code) => {
+            if (code !== 0) {
+                this.emit('error', { scope: 'entityWorker', message: `entity worker exited with code ${code}` });
+            }
+            this.entityWorker = null;
+        });
+
+        this.entityReadyPromise = this.postToEntityWorker('init', entityConfig)
+            .catch((error) => {
+                this.emit('error', { scope: 'entityWorker', message: error.message, stack: error.stack });
+                throw error;
+            });
+    }
+
+    handleEntityWorkerMessage(msg) {
+        if (!msg || typeof msg !== 'object') return;
+
+        if (msg.type === 'response') {
+            const pending = this.entityWorkerRequests.get(msg.requestId);
+            if (!pending) return;
+            this.entityWorkerRequests.delete(msg.requestId);
+            clearTimeout(pending.timeout);
+            pending.resolve(msg.data);
+            return;
+        }
+
+        if (msg.type === 'event') {
+            if (msg.event === 'error' && msg.data) {
+                this.emit('error', { scope: 'entityWorker', ...msg.data });
+            }
+        }
+    }
+
+    postToEntityWorker(type, payload = {}, expectResponse = true) {
+        if (!this.entityWorker) {
+            return Promise.reject(new Error('Entity worker not ready'));
+        }
+
+        if (!expectResponse) {
+            this.entityWorker.postMessage({ type, payload });
+            return Promise.resolve();
+        }
+
+        const requestId = this.nextEntityRequestId++;
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                this.entityWorkerRequests.delete(requestId);
+                reject(new Error(`Entity worker request "${type}" timed out`));
+            }, 5000);
+
+            this.entityWorkerRequests.set(requestId, { resolve, reject, timeout });
+            this.entityWorker.postMessage({ type, payload, requestId });
+        });
+    }
+
+    async ensureEntityWorkerReady() {
+        if (this.entityReadyPromise) {
+            await this.entityReadyPromise;
+            this.entityReadyPromise = null;
+        }
+    }
+
+    async offloadSandUpdate(dt) {
+        if (!this.sandWorker || !this.engine) {
+            return;
+        }
+
+        const activeKeys = this.engine.activeSandChunkKeys && this.engine.activeSandChunkKeys.length
+            ? Array.from(this.engine.activeSandChunkKeys)
+            : [];
+
+        if (activeKeys.length === 0) {
+            return;
+        }
+
+        const sandSnapshot = activeKeys.length
+            ? this.engine.serializeSandChunksForKeys(activeKeys, { includeState: true })
+            : this.engine.serializeSandChunks(true, { includeState: true });
+
+        if (!sandSnapshot || !Array.isArray(sandSnapshot.chunks)) {
+            return;
+        }
+
+        const terrainSnapshot = this.engine.serializeTerrainChunksForKeys(activeKeys);
+
+        try {
+            const response = await this.postToSandWorker('update', {
+                dt,
+                tick: this.tick,
+                keys: activeKeys,
+                sandSnapshot,
+                terrainSnapshot
+            });
+
+            if (!response) {
+                return;
+            }
+
+            const dirtySet = new Set(Array.isArray(response.dirtyKeys) ? response.dirtyKeys : []);
+
+            if (response.sandSnapshot && Array.isArray(response.sandSnapshot.chunks)) {
+                this.engine.applySandSnapshot(response.sandSnapshot, false);
+                for (const chunk of response.sandSnapshot.chunks) {
+                    if (chunk && typeof chunk.key === 'string') {
+                        dirtySet.add(chunk.key);
+                    }
+                }
+            }
+
+            if (dirtySet.size) {
+                this.engine.flushDirtySandChunks(Array.from(dirtySet));
+            }
+
+            if (Number.isFinite(response.sandCount)) {
+                this.engine.sandParticleCount = response.sandCount;
+            }
+        } catch (error) {
+            this.emit('error', { scope: 'sandWorker', message: error.message, stack: error.stack });
+            // Fallback to local sand update if worker fails
+            this.engine.updateSand(dt);
+        }
+    }
+
+    async offloadEntityUpdate(dt) {
+        if (!this.entityWorker || !this.engine) {
+            return false;
+        }
+
+        await this.ensureEntityWorkerReady();
+
+        const activeKeys = this.engine.activeChunkKeys && this.engine.activeChunkKeys.length
+            ? Array.from(this.engine.activeChunkKeys)
+            : null;
+
+        const entities = this.engine.serializeEntities(activeKeys);
+        if ((!entities.players.length) && (!entities.projectiles.length)) {
+            return false;
+        }
+
+        const terrainSnapshot = activeKeys && activeKeys.length
+            ? this.engine.serializeTerrainChunksForKeys(activeKeys)
+            : null;
+
+        try {
+            const response = await this.postToEntityWorker('update', {
+                dt,
+                tick: this.tick,
+                keys: activeKeys,
+                entities,
+                terrainSnapshot
+            });
+
+            if (response && response.entities) {
+                this.engine.applyEntitySnapshot(response.entities);
+            }
+            const dirtyKeys = new Set(Array.isArray(response?.dirtyChunks) ? response.dirtyChunks : []);
+
+            if (response && response.terrainModifications) {
+                this.engine.terrain.applyModifications(response.terrainModifications);
+                if (Array.isArray(response.terrainModifications.chunks)) {
+                    for (const chunk of response.terrainModifications.chunks) {
+                        if (chunk && typeof chunk.key === 'string') {
+                            dirtyKeys.add(chunk.key);
+                            this.engine.terrain.unmarkChunkStatic(chunk.key);
+                        }
+                    }
+                }
+            }
+
+            if (response && Array.isArray(response.terrainMods)) {
+                for (const mod of response.terrainMods) {
+                    if (!mod) continue;
+                    this.recordAndBroadcastTerrainModification(mod.x, mod.y, mod.radius, mod.explosive);
+                }
+            }
+
+            if (dirtyKeys.size) {
+                this.queueChunkResyncForKeys(Array.from(dirtyKeys), true);
+            }
+            return true;
+        } catch (error) {
+            this.emit('error', { scope: 'entityWorker', message: error.message, stack: error.stack });
+            this.engine.updateEntities(dt, activeKeys);
+            return false;
+        }
+    }
+
+    async updatePhysics() {
+        if (!this.engine || this.physicsRunning) return;
+        this.physicsRunning = true;
+        const startTime = Date.now();
+        try {
+            const dt = this.engine.fixedTimeStep || (1000 / this.tickRate);
+
+            await this.ensureEntityWorkerReady();
+            const { width: viewWidth, height: viewHeight } = this.engine.getViewDimensions();
+            this.engine.updateActiveChunks(viewWidth, viewHeight);
+
+            let entityUpdated = false;
+            if (this.entityWorker) {
+                entityUpdated = await this.offloadEntityUpdate(dt);
+            }
+            if (!entityUpdated) {
+                const activeKeys = this.engine.activeChunkKeys && this.engine.activeChunkKeys.length
+                    ? Array.from(this.engine.activeChunkKeys)
+                    : null;
+                this.engine.updateEntities(dt, activeKeys);
+            }
+
+            await this.ensureSandWorkerReady();
+            const skipParticles = this.dropParticlesUntil > this.tick;
+            const activeKeys = this.engine.activeChunkKeys && this.engine.activeChunkKeys.length
+                ? Array.from(this.engine.activeChunkKeys)
+                : null;
+
+            this.engine.update(dt, {
+                skipSand: !!this.sandWorker,
+                skipEntities: !!this.entityWorker,
+                skipParticles,
+                entityKeys: activeKeys
+            });
+
+            this.engine.tick += 1;
+            this.tick = this.engine.tick;
+
+            if (this.sandWorker) {
+                await this.offloadSandUpdate(dt);
+            }
+
+            this.broadcastPendingSandUpdate();
+        } finally {
+            const duration = Date.now() - startTime;
+            this.lastUpdateDuration = duration;
+            if (duration > this.tickIntervalMs) {
+                const overTicks = Math.ceil(duration / this.tickIntervalMs);
+                this.dropParticlesUntil = this.tick + overTicks;
+            } else if (this.dropParticlesUntil > this.tick) {
+                this.dropParticlesUntil = Math.max(this.dropParticlesUntil - 1, 0);
+            }
+            this.physicsRunning = false;
+        }
     }
 
     broadcastState() {
@@ -194,6 +552,37 @@ class SimulationCore {
 
         if (this.terrainModifications.length > this.maxTerrainModHistory) {
             this.terrainModifications = this.terrainModifications.slice(-this.maxTerrainModHistory);
+        }
+
+        const staticUpdate = this.engine.pullStaticTerrainUpdates(8);
+        if (staticUpdate) {
+            if (staticUpdate.static && staticUpdate.static.chunks && staticUpdate.static.chunks.length) {
+                const chunkSize = staticUpdate.static.chunkSize || this.engine.chunkSize;
+                for (const chunk of staticUpdate.static.chunks) {
+                    if (!chunk || !chunk.key) continue;
+                    const stored = {
+                        key: chunk.key,
+                        data: chunk.data
+                    };
+                    if (chunk.pixels) {
+                        stored.pixels = chunk.pixels.map((px) => ({ ...px }));
+                    }
+                    this.staticTerrainStore.set(chunk.key, stored);
+                }
+                this.emit('terrain_static', {
+                    chunkSize,
+                    chunks: staticUpdate.static.chunks,
+                    static: true
+                });
+            }
+
+            if (Array.isArray(staticUpdate.invalidate) && staticUpdate.invalidate.length) {
+                for (const key of staticUpdate.invalidate) {
+                    this.staticTerrainStore.delete(key);
+                }
+                this.emit('terrain_static_clear', { keys: staticUpdate.invalidate });
+                this.queueChunkResyncForKeys(staticUpdate.invalidate, true);
+            }
         }
     }
 
@@ -352,6 +741,13 @@ class SimulationCore {
             if (sandSnapshot) {
                 payload.sandChunks = sandSnapshot;
             }
+        }
+
+        if (this.staticTerrainStore && this.staticTerrainStore.size) {
+            payload.staticTerrain = {
+                chunkSize: this.engine ? this.engine.chunkSize : (payload.chunkSize || this.config.chunkSize || 64),
+                chunks: Array.from(this.staticTerrainStore.values())
+            };
         }
         return payload;
     }
@@ -866,6 +1262,9 @@ class SimulationCore {
 
 const simulation = new SimulationCore(workerData || {});
 
+if (!parentPort) {
+    module.exports = SimulationCore;
+} else {
 parentPort.on('message', (msg) => {
     if (!msg || typeof msg !== 'object') return;
     const { type, requestId, payload } = msg;
@@ -948,3 +1347,4 @@ parentPort.on('message', (msg) => {
             break;
     }
 });
+}

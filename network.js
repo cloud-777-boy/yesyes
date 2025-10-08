@@ -150,6 +150,14 @@ class NetworkManager {
                 this.handleChunkSync(msg);
                 break;
 
+            case 'terrain_static':
+                this.handleTerrainStatic(msg);
+                break;
+
+            case 'terrain_static_clear':
+                this.handleTerrainStaticClear(msg);
+                break;
+
             case 'projectile':
                 if (!this.engineReady) break;
                 this.handleProjectileMessage(msg);
@@ -378,6 +386,10 @@ class NetworkManager {
         if (Array.isArray(msg.projectiles) && this.engine) {
             this.syncProjectiles(msg.projectiles);
         }
+
+        if (msg.staticTerrain && this.engine) {
+            this.applyTerrainStatic(msg.staticTerrain);
+        }
     }
 
     handleInputAck(msg) {
@@ -493,6 +505,29 @@ class NetworkManager {
                 full: true
             });
         }
+    }
+
+    handleTerrainStatic(msg) {
+        if (!this.engineReady || !this.engine || !msg || !Array.isArray(msg.chunks)) return;
+
+        const chunkSize = typeof msg.chunkSize === 'number' && msg.chunkSize > 0
+            ? msg.chunkSize
+            : this.engine.chunkSize;
+
+        if (this.engine.terrain && typeof this.engine.terrain.setChunkSize === 'function' && chunkSize) {
+            this.engine.terrain.setChunkSize(chunkSize);
+        }
+
+        if (this.engine.terrain && typeof this.engine.terrain.applyChunkSnapshots === 'function') {
+            this.engine.terrain.applyChunkSnapshots({ chunkSize, chunks: msg.chunks });
+        }
+    }
+
+    handleTerrainStaticClear(msg) {
+        if (!this.engineReady || !this.engine || !msg || !Array.isArray(msg.keys)) return;
+
+        // No explicit action for now; next authoritative update will refresh these chunks.
+        // Optionally, we could request a resync or mark local cache as stale.
     }
 
     handleProjectileMessage(msg) {

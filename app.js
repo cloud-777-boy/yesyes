@@ -64,7 +64,7 @@ class GameServer {
         this.seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
         this.random = DeterministicRandom ? new DeterministicRandom(this.seed) : null;
 
-        this.tickRate = 60;
+        this.tickRate = 40;
         this.stateUpdateRate = 20;
         this.sandUpdateRate = 20;
         this.chunkSyncRadius = 1;
@@ -265,6 +265,12 @@ class GameServer {
                 break;
             case 'sand_update':
                 this.broadcast({ type: 'sand_update', ...data });
+                break;
+            case 'terrain_static':
+                this.broadcast({ type: 'terrain_static', ...data });
+                break;
+            case 'terrain_static_clear':
+                this.broadcast({ type: 'terrain_static_clear', ...data });
                 break;
             case 'broadcast': {
                 if (data && data.message) {
