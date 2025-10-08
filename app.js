@@ -68,6 +68,7 @@ class GameServer {
         this.stateUpdateRate = 20;
         this.sandUpdateRate = 20;
         this.chunkSyncRadius = 1;
+        this.maxChunkSyncPerTick = 12;
 
         this.playerCounter = 0;
         this.totalMessages = 0;
@@ -93,7 +94,7 @@ class GameServer {
             chunkSyncRadius: this.chunkSyncRadius,
             playerChunkComputeRadius: 1,
             playerChunkBufferRadius: 1,
-            maxChunkSyncPerTick: 4
+            maxChunkSyncPerTick: this.maxChunkSyncPerTick
         };
 
         const workerPath = path.resolve(__dirname, 'simulationWorker.js');

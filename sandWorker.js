@@ -98,9 +98,13 @@ class SandWorkerCore {
 const core = new SandWorkerCore(workerData);
 
 function respond(requestId, data) {
+    if (!parentPort) return;
     parentPort.postMessage({ type: 'response', requestId, data });
 }
 
+if (!parentPort) {
+    module.exports = SandWorkerCore;
+} else {
 parentPort.on('message', (msg) => {
     if (!msg || typeof msg !== 'object') return;
     const { type, requestId, payload } = msg;
@@ -121,3 +125,4 @@ parentPort.on('message', (msg) => {
         respond(requestId, { error: error.message, stack: error.stack });
     }
 });
+}

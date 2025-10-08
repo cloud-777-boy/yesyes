@@ -32,7 +32,7 @@ class GameEngine {
         this.pixelSize = 6; // Render scale (zoomed-in view)
         
         this.terrain = null;
-        this.chunkSize = 256;
+        this.chunkSize = 128;
         this.sandChunks = new Map();
         this.dirtySandChunkKeys = new Set();
         this.sandParticleCount = 0;

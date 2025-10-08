@@ -23,7 +23,7 @@ class SimulationCore {
         this.chunkSubscribers = new Map();
         this.chunkVersions = new Map();
         this.playerChunkVersions = new Map();
-        this.maxChunkSyncPerTick = config.maxChunkSyncPerTick || 4;
+        this.maxChunkSyncPerTick = config.maxChunkSyncPerTick || 12;
         this.chunkSyncRadius = config.chunkSyncRadius ?? 1;
 
         this.totalMessages = 0;
@@ -380,16 +380,14 @@ class SimulationCore {
 
         await this.ensureEntityWorkerReady();
 
-        const activeKeys = this.engine.activeChunkKeys && this.engine.activeChunkKeys.length
-            ? Array.from(this.engine.activeChunkKeys)
-            : null;
+        const activeKeys = this.collectEntityChunkKeys();
 
-        const entities = this.engine.serializeEntities(activeKeys);
+        const entities = this.engine.serializeEntities(activeKeys ? new Set(activeKeys) : null);
         if ((!entities.players.length) && (!entities.projectiles.length)) {
             return false;
         }
 
-        const terrainSnapshot = activeKeys && activeKeys.length
+        const terrainSnapshot = activeKeys
             ? this.engine.serializeTerrainChunksForKeys(activeKeys)
             : null;
 
@@ -408,7 +406,7 @@ class SimulationCore {
             const dirtyKeys = new Set(Array.isArray(response?.dirtyChunks) ? response.dirtyChunks : []);
 
             if (response && response.terrainModifications) {
-                this.engine.terrain.applyModifications(response.terrainModifications);
+                this.engine.terrain.applyModifications(response.terrainModifications, true);
                 if (Array.isArray(response.terrainModifications.chunks)) {
                     for (const chunk of response.terrainModifications.chunks) {
                         if (chunk && typeof chunk.key === 'string') {
@@ -432,9 +430,43 @@ class SimulationCore {
             return true;
         } catch (error) {
             this.emit('error', { scope: 'entityWorker', message: error.message, stack: error.stack });
-            this.engine.updateEntities(dt, activeKeys);
+            this.engine.updateEntities(dt, activeKeys ? new Set(activeKeys) : null);
             return false;
         }
+    }
+
+    collectEntityChunkKeys() {
+        if (!this.engine) return null;
+        const set = new Set();
+        if (Array.isArray(this.engine.activeChunkKeys)) {
+            for (let i = 0; i < this.engine.activeChunkKeys.length; i++) {
+                set.add(this.engine.activeChunkKeys[i]);
+            }
+        }
+        const addKey = (x, y) => {
+            const key = this.engine.getChunkKeyForPosition(x, y);
+            if (key) {
+                set.add(key);
+            }
+        };
+
+        const players = this.engine.playerList;
+        for (let i = 0; i < players.length; i++) {
+            const player = players[i];
+            if (!player) continue;
+            addKey(player.x, player.y);
+        }
+
+        const projectiles = this.engine.projectiles;
+        for (let i = 0; i < projectiles.length; i++) {
+            const proj = projectiles[i];
+            if (!proj) continue;
+            addKey(proj.x, proj.y);
+            // anticipate one step ahead to keep collision terrain loaded
+            addKey(proj.x + proj.vx * 0.5, proj.y + proj.vy * 0.5);
+        }
+
+        return set.size ? Array.from(set) : null;
     }
 
     async updatePhysics() {
@@ -449,19 +481,17 @@ class SimulationCore {
             this.engine.updateActiveChunks(viewWidth, viewHeight);
 
             let entityUpdated = false;
+            const entityKeys = this.collectEntityChunkKeys();
             if (this.entityWorker) {
                 entityUpdated = await this.offloadEntityUpdate(dt);
             }
             if (!entityUpdated) {
-                const activeKeys = this.engine.activeChunkKeys && this.engine.activeChunkKeys.length
-                    ? Array.from(this.engine.activeChunkKeys)
-                    : null;
-                this.engine.updateEntities(dt, activeKeys);
+                this.engine.updateEntities(dt, entityKeys ? new Set(entityKeys) : null);
             }
 
             await this.ensureSandWorkerReady();
             const skipParticles = this.dropParticlesUntil > this.tick;
-            const activeKeys = this.engine.activeChunkKeys && this.engine.activeChunkKeys.length
+            const sandKeys = this.engine.activeChunkKeys && this.engine.activeChunkKeys.length
                 ? Array.from(this.engine.activeChunkKeys)
                 : null;
 
@@ -469,7 +499,7 @@ class SimulationCore {
                 skipSand: !!this.sandWorker,
                 skipEntities: !!this.entityWorker,
                 skipParticles,
-                entityKeys: activeKeys
+                entityKeys: entityKeys || sandKeys
             });
 
             this.engine.tick += 1;

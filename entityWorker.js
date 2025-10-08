@@ -86,9 +86,13 @@ class EntityWorkerCore {
 const core = new EntityWorkerCore(workerData);
 
 function respond(requestId, data) {
+    if (!parentPort) return;
     parentPort.postMessage({ type: 'response', requestId, data });
 }
 
+if (!parentPort) {
+    module.exports = EntityWorkerCore;
+} else {
 parentPort.on('message', (msg) => {
     if (!msg || typeof msg !== 'object') return;
     const { type, requestId, payload } = msg;
@@ -109,3 +113,4 @@ parentPort.on('message', (msg) => {
         respond(requestId, { error: error.message, stack: error.stack });
     }
 });
+}
