@@ -74,10 +74,33 @@ class EntityWorkerCore {
             }
         }
 
+        const chunkSize = this.engine.chunkSize || 64;
+        const chunkWidth = Math.max(1, Math.ceil(this.engine.width / chunkSize));
+        const chunkHeight = Math.max(1, Math.ceil(this.engine.height / chunkSize));
+
+        for (const mod of mods) {
+            if (!mod) continue;
+            const cx = Math.floor(mod.x / chunkSize);
+            const cy = Math.floor(mod.y / chunkSize);
+            const radiusChunks = Math.max(0, Math.ceil((mod.radius || 0) / chunkSize)) + 1;
+            for (let dy = -radiusChunks; dy <= radiusChunks; dy++) {
+                const chunkY = Math.max(0, Math.min(chunkHeight - 1, cy + dy));
+                for (let dx = -radiusChunks; dx <= radiusChunks; dx++) {
+                    const chunkX = ((cx + dx) % chunkWidth + chunkWidth) % chunkWidth;
+                    dirtyChunks.add(`${chunkX}|${chunkY}`);
+                }
+            }
+        }
+
+        const chunkSnapshot = dirtyChunks.size
+            ? this.engine.terrain.serializeChunksForKeys(dirtyChunks)
+            : null;
+
         return {
             entities,
             terrainMods: mods,
             terrainModifications: diffs,
+            chunkSnapshot,
             dirtyChunks: Array.from(dirtyChunks)
         };
     }

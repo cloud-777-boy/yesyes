@@ -32,7 +32,7 @@ class GameEngine {
         this.pixelSize = 6; // Render scale (zoomed-in view)
         
         this.terrain = null;
-        this.chunkSize = 128;
+        this.chunkSize = 64;
         this.sandChunks = new Map();
         this.dirtySandChunkKeys = new Set();
         this.sandParticleCount = 0;
@@ -61,6 +61,7 @@ class GameEngine {
         this.onSandUpdate = null;
         this.playerChunkComputeRadius = 1;
         this.playerChunkBufferRadius = 2;
+        this.projectileChunkRadius = 1;
         this.maxComputedSandPriority = 1;
         this.network = null;
         this.serverStats = {
@@ -416,6 +417,22 @@ class GameEngine {
         }
 
         this.activeChunkKeys = Array.from(this.activeChunkSet).sort((a, b) => a.localeCompare(b));
+
+        const projectiles = this.projectiles;
+        if (this.isServer && Array.isArray(projectiles) && projectiles.length) {
+            const projRadius = Math.max(0, Math.floor(this.projectileChunkRadius));
+            for (let i = 0; i < projectiles.length; i++) {
+                const proj = projectiles[i];
+                if (!proj || proj.dead) continue;
+                const baseX = proj.x;
+                const baseY = proj.y;
+                const futureX = baseX + (proj.vx || 0) * 0.5;
+                const futureY = baseY + (proj.vy || 0) * 0.5;
+                this._addProjectileChunks(baseX, baseY, projRadius, totalChunksX, totalChunksY, chunkSize, maxActiveDist, setChunkPriority);
+                this._addProjectileChunks(futureX, futureY, projRadius, totalChunksX, totalChunksY, chunkSize, maxActiveDist, setChunkPriority);
+            }
+            this.activeChunkKeys = Array.from(this.activeChunkSet).sort((a, b) => a.localeCompare(b));
+        }
 
         this.activeSandLists.length = 0;
         this.activeSandChunkKeys.length = 0;
@@ -1787,6 +1804,36 @@ class GameEngine {
             base.lastBlobId = particle.lastBlobId ?? -1;
         }
         return base;
+    }
+
+    _addProjectileChunks(x, y, radius, totalChunksX, totalChunksY, chunkSize, maxActiveDist, setChunkPriority) {
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            return;
+        }
+        let chunkX = Math.floor(x / chunkSize);
+        let chunkY = Math.floor(y / chunkSize);
+        chunkY = Math.max(0, Math.min(totalChunksY - 1, chunkY));
+        chunkX = ((chunkX % totalChunksX) + totalChunksX) % totalChunksX;
+
+        const extent = Math.max(0, radius);
+        for (let dx = -extent; dx <= extent; dx++) {
+            for (let dy = -extent; dy <= extent; dy++) {
+                const px = ((chunkX + dx) % totalChunksX + totalChunksX) % totalChunksX;
+                const py = Math.max(0, Math.min(totalChunksY - 1, chunkY + dy));
+                const key = `${px}|${py}`;
+                const dist = Math.max(Math.abs(dx), Math.abs(dy));
+                let priority = dist <= this.playerChunkComputeRadius ? 1 : 3;
+                if (dist === 0) {
+                    priority = 1;
+                } else if (dist <= this.playerChunkBufferRadius) {
+                    priority = 2;
+                }
+                if (priority > maxActiveDist) {
+                    priority = maxActiveDist;
+                }
+                setChunkPriority(key, priority);
+            }
+        }
     }
 
     updateEntities(dt, entityKeys = null) {

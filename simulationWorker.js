@@ -405,6 +405,16 @@ class SimulationCore {
             }
             const dirtyKeys = new Set(Array.isArray(response?.dirtyChunks) ? response.dirtyChunks : []);
 
+            if (response && response.chunkSnapshot && response.chunkSnapshot.chunks && response.chunkSnapshot.chunks.length) {
+                this.engine.terrain.applyChunkSnapshots(response.chunkSnapshot);
+                for (const chunk of response.chunkSnapshot.chunks) {
+                    if (chunk && typeof chunk.key === 'string') {
+                        dirtyKeys.add(chunk.key);
+                        this.engine.terrain.unmarkChunkStatic(chunk.key);
+                    }
+                }
+            }
+
             if (response && response.terrainModifications) {
                 this.engine.terrain.applyModifications(response.terrainModifications, true);
                 if (Array.isArray(response.terrainModifications.chunks)) {
@@ -420,7 +430,7 @@ class SimulationCore {
             if (response && Array.isArray(response.terrainMods)) {
                 for (const mod of response.terrainMods) {
                     if (!mod) continue;
-                    this.recordAndBroadcastTerrainModification(mod.x, mod.y, mod.radius, mod.explosive);
+                    this.engine.destroyTerrain(mod.x, mod.y, mod.radius, !!mod.explosive);
                 }
             }
 

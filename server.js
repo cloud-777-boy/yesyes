@@ -640,9 +640,9 @@ class GameServer {
 
     destroyTerrain(x, y, radius, explosive = false) {
         // Server-side terrain destruction
-        const destroyed = this.terrain.destroy(Math.floor(x), Math.floor(y), radius);
+        const destroyedCount = this.terrain.destroy(Math.floor(x), Math.floor(y), radius);
 
-        if (destroyed.length > 0) {
+        if (destroyedCount > 0) {
             this.terrainVersion++;
 
             // Record modification for sync
@@ -926,7 +926,7 @@ class ServerTerrain {
     }
 
     destroy(centerX, centerY, radius) {
-        const destroyed = [];
+        let destroyedCount = 0;
 
         for (let dy = -radius; dy <= radius; dy++) {
             for (let dx = -radius; dx <= radius; dx++) {
@@ -937,13 +937,13 @@ class ServerTerrain {
                     const material = this.getPixel(x, y);
                     if (material !== this.EMPTY && material !== this.BEDROCK) {
                         this.setPixel(x, y, this.EMPTY);
-                        destroyed.push({ x, y, material });
+                        destroyedCount++;
                     }
                 }
             }
         }
 
-        return destroyed;
+        return destroyedCount;
     }
 
     serialize() {

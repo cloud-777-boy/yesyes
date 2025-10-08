@@ -139,7 +139,7 @@ class Terrain {
         this.dirtyBounds = null;
         this.isLittleEndian = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
         this.fullRedrawNeeded = true;
-        this.chunkSize = 32;
+        this.chunkSize = 64;
         this.chunkWidth = Math.ceil(width / this.chunkSize);
         this.chunkHeight = Math.ceil(height / this.chunkSize);
         this.modifiedChunks = new Map();
@@ -152,7 +152,7 @@ class Terrain {
         this.chunkLastActive = new Map();
         this.chunkRetentionTicks = 1800; // ~30 seconds at 60Hz to avoid thrash
         this.maxChunkUnloadPerUpdate = 6;
-        this.maxChunkLoadPerUpdate = 4;
+        this.maxChunkLoadPerUpdate = 6;
         this.unloadedChunkStore = null;
         this.unloadedChunkLRU = new Map();
         this.maxStoredChunks = 4096;
