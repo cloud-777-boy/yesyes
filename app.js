@@ -64,8 +64,8 @@ class GameServer {
         this.seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
         this.random = DeterministicRandom ? new DeterministicRandom(this.seed) : null;
 
-        this.tickRate = 40;
-        this.stateUpdateRate = 20;
+        this.tickRate = 60;
+        this.stateUpdateRate = 60;
         this.sandUpdateRate = 20;
         this.chunkSyncRadius = 1;
         this.maxChunkSyncPerTick = 12;

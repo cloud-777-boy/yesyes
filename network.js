@@ -37,6 +37,7 @@ class NetworkManager {
         this.appliedTerrainChunkDiffs = new Set();
         this.maxTerrainChunkDiffHistory = 2048;
         this.lastAppliedTerrainChunkTick = -Infinity;
+        this.serverProjectiles = new Map();
     }
 
     attachEngine(engine) {
@@ -99,6 +100,7 @@ class NetworkManager {
         this.appliedTerrainMods.clear();
         this.appliedTerrainChunkDiffs.clear();
         this.lastAppliedTerrainChunkTick = -Infinity;
+        this.serverProjectiles.clear();
     }
 
     send(data) {
@@ -338,11 +340,19 @@ class NetworkManager {
             this.currentTick = Math.max(this.currentTick, serverTick);
         }
 
+        const playersFull = msg.playersFull === true;
         const playersData = Array.isArray(msg.players)
-            ? msg.players.slice().sort((a, b) => a.id.localeCompare(b.id))
+            ? msg.players.slice().sort((a, b) => {
+                const idA = typeof a.id === 'string' ? a.id : '';
+                const idB = typeof b.id === 'string' ? b.id : '';
+                return idA.localeCompare(idB);
+            })
             : [];
+        const seenPlayerIds = new Set();
 
         for (const pData of playersData) {
+            if (!pData || typeof pData.id !== 'string') continue;
+            seenPlayerIds.add(pData.id);
             if (pData.id === this.playerId) continue;
             let player = this.engine.players.get(pData.id);
             if (!player) {
@@ -365,6 +375,23 @@ class NetworkManager {
             player.serverStateTime = Date.now();
         }
 
+        if (playersFull && this.engine && this.engine.players) {
+            for (const id of this.engine.players.keys()) {
+                if (id === this.playerId) continue;
+                if (!seenPlayerIds.has(id)) {
+                    this.engine.removePlayer(id);
+                }
+            }
+        }
+
+        if (Array.isArray(msg.removedPlayers) && this.engine && this.engine.players) {
+            for (const removedId of msg.removedPlayers) {
+                if (typeof removedId !== 'string') continue;
+                if (removedId === this.playerId) continue;
+                this.engine.removePlayer(removedId);
+            }
+        }
+
         if (this.playerId) {
             const serverPlayer = playersData.find(p => p.id === this.playerId);
             if (serverPlayer) {
@@ -383,8 +410,15 @@ class NetworkManager {
             this.applyTerrainMods(msg.terrainMods);
         }
 
-        if (Array.isArray(msg.projectiles) && this.engine) {
-            this.syncProjectiles(msg.projectiles);
+        if (this.engine) {
+            const projectileSnapshot = this.updateServerProjectiles(
+                Array.isArray(msg.projectiles) ? msg.projectiles : null,
+                Array.isArray(msg.removedProjectiles) ? msg.removedProjectiles : null,
+                msg.projectilesFull === true
+            );
+            if (projectileSnapshot !== null) {
+                this.syncProjectiles(projectileSnapshot);
+            }
         }
 
         if (msg.staticTerrain && this.engine) {
@@ -742,6 +776,86 @@ class NetworkManager {
             }
             this.lastAppliedTerrainChunkTick = Math.max(this.lastAppliedTerrainChunkTick, newTick);
         }
+    }
+
+    cloneProjectileData(data) {
+        if (!data || typeof data !== 'object') return null;
+        return {
+            id: (typeof data.id === 'string' && data.id.length) ? data.id : null,
+            clientProjectileId: (typeof data.clientProjectileId === 'string' && data.clientProjectileId.length)
+                ? data.clientProjectileId
+                : null,
+            x: Number.isFinite(data.x) ? data.x : 0,
+            y: Number.isFinite(data.y) ? data.y : 0,
+            vx: Number.isFinite(data.vx) ? data.vx : 0,
+            vy: Number.isFinite(data.vy) ? data.vy : 0,
+            type: data.type,
+            ownerId: data.ownerId,
+            lifetime: Number.isFinite(data.lifetime) ? data.lifetime : 0,
+            dead: !!data.dead
+        };
+    }
+
+    projectilePayloadChanged(prev, next) {
+        if (!prev) return true;
+        return prev.x !== next.x
+            || prev.y !== next.y
+            || prev.vx !== next.vx
+            || prev.vy !== next.vy
+            || prev.type !== next.type
+            || prev.ownerId !== next.ownerId
+            || prev.lifetime !== next.lifetime
+            || prev.dead !== next.dead;
+    }
+
+    getProjectileKeyFromData(data) {
+        if (!data || typeof data !== 'object') {
+            return null;
+        }
+        if (typeof data.id === 'string' && data.id.length) {
+            return `id:${data.id}`;
+        }
+        if (typeof data.clientProjectileId === 'string' && data.clientProjectileId.length) {
+            return `client:${data.clientProjectileId}`;
+        }
+        return null;
+    }
+
+    updateServerProjectiles(updates, removed, isFull) {
+        let changed = false;
+
+        if (isFull) {
+            this.serverProjectiles.clear();
+            changed = true;
+        }
+
+        if (Array.isArray(removed)) {
+            for (const removal of removed) {
+                const key = this.getProjectileKeyFromData(removal);
+                if (key && this.serverProjectiles.delete(key)) {
+                    changed = true;
+                }
+            }
+        }
+
+        if (Array.isArray(updates)) {
+            for (const raw of updates) {
+                const key = this.getProjectileKeyFromData(raw);
+                if (!key) continue;
+                const clone = this.cloneProjectileData(raw);
+                const prev = this.serverProjectiles.get(key);
+                if (!prev || this.projectilePayloadChanged(prev, clone) || isFull) {
+                    this.serverProjectiles.set(key, clone);
+                    changed = true;
+                }
+            }
+        }
+
+        if (!changed) {
+            return null;
+        }
+
+        return Array.from(this.serverProjectiles.values()).map((proj) => ({ ...proj }));
     }
 
     syncProjectiles(projectiles) {

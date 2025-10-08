@@ -12,6 +12,13 @@
 
 const WebSocket = require('ws');
 
+const roundTo = (value, decimals) => {
+    if (!Number.isFinite(value)) return 0;
+    if (!decimals) return Math.round(value);
+    const factor = Math.pow(10, decimals);
+    return Math.round(value * factor) / factor;
+};
+
 class GameServer {
     constructor(port = 8080) {
         this.port = port;
@@ -36,7 +43,13 @@ class GameServer {
 
         // Network settings
         this.tickRate = 60; // Server simulation rate
-        this.stateUpdateRate = 20; // Client broadcast rate
+        this.stateUpdateRate = 60; // Client broadcast rate
+        this.broadcastIntervalTicks = Math.max(1, Math.round(this.tickRate / this.stateUpdateRate));
+        this.lastPlayerBroadcast = new Map();
+        this.lastProjectileBroadcast = new Map();
+        this.forceFullPlayerBroadcast = true;
+        this.forceFullProjectileBroadcast = true;
+        this.nextTempProjectileId = 1;
 
         // Anti-cheat settings
         this.MAX_SPEED = 5; // Max horizontal speed
@@ -478,9 +491,103 @@ class GameServer {
         });
     }
 
+    serializePlayerForBroadcast(player) {
+        return {
+            id: player.id,
+            x: roundTo(player.x || 0, 2),
+            y: roundTo(player.y || 0, 2),
+            vx: roundTo(player.vx || 0, 3),
+            vy: roundTo(player.vy || 0, 3),
+            health: Math.round(Number.isFinite(player.health) ? player.health : 0),
+            alive: !!player.alive,
+            aimAngle: roundTo(player.aimAngle || 0, 3),
+            selectedSpell: player.selectedSpell,
+            lastProcessedInput: player.lastProcessedInput || 0
+        };
+    }
+
+    playerBroadcastChanged(prev, next) {
+        if (!prev) return true;
+        return prev.x !== next.x
+            || prev.y !== next.y
+            || prev.vx !== next.vx
+            || prev.vy !== next.vy
+            || prev.health !== next.health
+            || prev.alive !== next.alive
+            || prev.aimAngle !== next.aimAngle
+            || prev.selectedSpell !== next.selectedSpell
+            || prev.lastProcessedInput !== next.lastProcessedInput;
+    }
+
+    serializeProjectileForBroadcast(projectile) {
+        if (!projectile) return null;
+
+        let serverId = (typeof projectile.id === 'string' && projectile.id.length)
+            ? projectile.id
+            : null;
+        if (!serverId && typeof projectile.serverId === 'string' && projectile.serverId.length) {
+            serverId = projectile.serverId;
+        }
+        let clientProjectileId = (typeof projectile.clientProjectileId === 'string' && projectile.clientProjectileId.length)
+            ? projectile.clientProjectileId
+            : null;
+
+        if (!serverId && !clientProjectileId) {
+            if (typeof projectile.__broadcastKey !== 'string' || !projectile.__broadcastKey.length) {
+                projectile.__broadcastKey = `tmp-${this.nextTempProjectileId++}`;
+            }
+            serverId = projectile.__broadcastKey;
+        }
+
+        const data = {
+            id: serverId,
+            clientProjectileId,
+            x: roundTo(projectile.x || 0, 2),
+            y: roundTo(projectile.y || 0, 2),
+            vx: roundTo(projectile.vx || 0, 3),
+            vy: roundTo(projectile.vy || 0, 3),
+            type: projectile.type,
+            ownerId: projectile.ownerId,
+            lifetime: roundTo(projectile.lifetime || 0, 3),
+            dead: !!projectile.dead
+        };
+
+        return {
+            key: this.getProjectileBroadcastKey(data),
+            data
+        };
+    }
+
+    projectileBroadcastChanged(prev, next) {
+        if (!prev) return true;
+        return prev.x !== next.x
+            || prev.y !== next.y
+            || prev.vx !== next.vx
+            || prev.vy !== next.vy
+            || prev.type !== next.type
+            || prev.ownerId !== next.ownerId
+            || prev.lifetime !== next.lifetime
+            || prev.dead !== next.dead;
+    }
+
+    getProjectileBroadcastKey(data) {
+        if (!data || typeof data !== 'object') {
+            return null;
+        }
+        if (typeof data.id === 'string' && data.id.length) {
+            return `id:${data.id}`;
+        }
+        if (typeof data.clientProjectileId === 'string' && data.clientProjectileId.length) {
+            return `client:${data.clientProjectileId}`;
+        }
+        return null;
+    }
+
     startGameLoop() {
         const tickInterval = 1000 / this.tickRate;
-        const stateInterval = 1000 / this.stateUpdateRate;
+        const broadcastInterval = this.broadcastIntervalTicks
+            ? Math.max(1, this.broadcastIntervalTicks)
+            : Math.max(1, Math.round(this.tickRate / this.stateUpdateRate));
 
         // Physics tick (60 FPS)
         setInterval(() => {
@@ -489,6 +596,10 @@ class GameServer {
             this.updatePhysics();
             this.updateProjectiles();
             this.updateChunks();
+
+            if (this.tick % broadcastInterval === 0) {
+                this.broadcastState();
+            }
 
             const tickTime = Date.now() - tickStart;
             this.tickTimes.push(tickTime);
@@ -499,11 +610,6 @@ class GameServer {
                 console.warn(`⚠️  Slow tick: ${tickTime.toFixed(2)}ms (target: ${tickInterval.toFixed(2)}ms)`);
             }
         }, tickInterval);
-
-        // State broadcast (20 Hz)
-        setInterval(() => {
-            this.broadcastState();
-        }, stateInterval);
 
         // Stats logging (every 10 seconds)
         setInterval(() => {
@@ -826,62 +932,128 @@ class GameServer {
     }
 
     broadcastState() {
-        // Delta compression: only send changed data
-        const serializedPlayers = Array.from(this.players.values()).map(p => ({
-                id: p.id,
-                x: Math.round(p.x * 10) / 10, // Reduce precision for bandwidth
-                y: Math.round(p.y * 10) / 10,
-                vx: Math.round(p.vx * 10) / 10,
-                vy: Math.round(p.vy * 10) / 10,
-                health: p.health,
-                alive: p.alive,
-                aimAngle: Math.round(p.aimAngle * 100) / 100,
-                selectedSpell: p.selectedSpell,
-                lastProcessedInput: p.lastProcessedInput
-            }));
-
-        const serializedProjectiles = this.projectiles.map(proj => {
-            const serialized = {
-                id: proj.id,
-                x: proj.x,
-                y: proj.y,
-                vx: proj.vx,
-                vy: proj.vy,
-                type: proj.type,
-                ownerId: proj.ownerId,
-                lifetime: proj.lifetime,
-                clientProjectileId: proj.clientProjectileId || null,
-                dead: !!proj.dead
-            };
-
-            if (serialized.clientProjectileId && serialized.ownerId) {
-                const ownerRecords = this.recentClientProjectiles.get(serialized.ownerId);
-                if (ownerRecords) {
-                    const record = ownerRecords.get(serialized.clientProjectileId);
-                    if (record) {
-                        record.serverId = serialized.id;
-                        record.payload = { ...serialized, spawn: false };
-                        record.dead = !!serialized.dead;
-                        record.timestamp = Date.now();
-                    }
-                }
-            }
-
-            return serialized;
-        });
-
         const state = {
             type: 'state',
             tick: this.tick,
-            players: serializedPlayers,
-            projectiles: serializedProjectiles,
-            projectileCount: this.projectiles.length,
             chunkCount: this.chunks.length
         };
 
-        // Only include terrain mods from last second
+        const nextPlayerMap = new Map();
+        const playerUpdates = [];
+        const removedPlayers = [];
+        const forceFullPlayers = this.forceFullPlayerBroadcast;
+
+        for (const player of this.players.values()) {
+            if (!player || !player.id) continue;
+            const serialized = this.serializePlayerForBroadcast(player);
+            nextPlayerMap.set(serialized.id, serialized);
+            if (forceFullPlayers || this.playerBroadcastChanged(this.lastPlayerBroadcast.get(serialized.id), serialized)) {
+                playerUpdates.push(serialized);
+            }
+        }
+
+        if (forceFullPlayers) {
+            state.players = Array.from(nextPlayerMap.values());
+            state.playersFull = true;
+        } else {
+            for (const id of this.lastPlayerBroadcast.keys()) {
+                if (!nextPlayerMap.has(id)) {
+                    removedPlayers.push(id);
+                }
+            }
+            if (playerUpdates.length) {
+                state.players = playerUpdates;
+            }
+            if (removedPlayers.length) {
+                state.removedPlayers = removedPlayers;
+            }
+        }
+
+        this.lastPlayerBroadcast = nextPlayerMap;
+        this.forceFullPlayerBroadcast = false;
+
+        const nextProjectileMap = new Map();
+        const projectileUpdates = [];
+        const removedProjectiles = [];
+        let forceFullProjectiles = this.forceFullProjectileBroadcast;
+        const fullProjectileList = [];
+        const now = Date.now();
+
+        for (let i = 0; i < this.projectiles.length; i++) {
+            const projectile = this.projectiles[i];
+            const serialized = this.serializeProjectileForBroadcast(projectile);
+            if (!serialized || !serialized.data) continue;
+            const { key, data } = serialized;
+            fullProjectileList.push(data);
+            if (!key) {
+                forceFullProjectiles = true;
+                continue;
+            }
+            nextProjectileMap.set(key, data);
+            if (forceFullProjectiles || this.projectileBroadcastChanged(this.lastProjectileBroadcast.get(key), data)) {
+                projectileUpdates.push(data);
+            }
+        }
+
+        if (forceFullProjectiles) {
+            state.projectiles = fullProjectileList;
+            state.projectilesFull = true;
+        } else {
+            for (const [key, prev] of this.lastProjectileBroadcast.entries()) {
+                if (!nextProjectileMap.has(key)) {
+                    removedProjectiles.push(prev);
+                }
+            }
+            if (projectileUpdates.length) {
+                state.projectiles = projectileUpdates;
+            }
+            if (removedProjectiles.length) {
+                state.removedProjectiles = removedProjectiles.map((proj) => ({
+                    id: proj && typeof proj.id === 'string' ? proj.id : null,
+                    clientProjectileId: proj && typeof proj.clientProjectileId === 'string' ? proj.clientProjectileId : null
+                }));
+            }
+        }
+
+        this.lastProjectileBroadcast = nextProjectileMap;
+        this.forceFullProjectileBroadcast = false;
+
+        const broadcastProjectiles = state.projectilesFull
+            ? fullProjectileList
+            : (state.projectiles || []);
+
+        if (broadcastProjectiles.length) {
+            for (const serialized of broadcastProjectiles) {
+                if (serialized.clientProjectileId && serialized.ownerId) {
+                    const ownerRecords = this.recentClientProjectiles.get(serialized.ownerId);
+                    if (ownerRecords) {
+                        const record = ownerRecords.get(serialized.clientProjectileId);
+                        if (record) {
+                            record.serverId = serialized.id;
+                            record.payload = { ...serialized, spawn: !serialized.dead };
+                            record.dead = !!serialized.dead;
+                            record.timestamp = now;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (removedProjectiles.length) {
+            for (const removal of removedProjectiles) {
+                if (removal && removal.clientProjectileId && removal.ownerId) {
+                    const ownerRecords = this.recentClientProjectiles.get(removal.ownerId);
+                    if (ownerRecords) {
+                        ownerRecords.delete(removal.clientProjectileId);
+                    }
+                }
+            }
+        }
+
+        state.projectileCount = this.projectiles.length;
+
         const recentMods = this.terrainModifications.filter(
-            mod => this.tick - mod.tick < 60
+            (mod) => this.tick - mod.tick < 60
         );
 
         if (recentMods.length > 0) {
