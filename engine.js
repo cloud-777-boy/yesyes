@@ -46,8 +46,8 @@ class GameEngine {
         this.baseSandCapacity = this.absoluteSandCap;
         this.maxSandParticles = this.baseSandCapacity;
         this.sandPoolLimit = this.absoluteSandCap;
-        this.maxSandUpdatesPerFrame = 900;
-        this.maxSandSpawnPerDestroy = 500;
+        this.maxSandUpdatesPerFrame = isServer ? 450 : 900;
+        this.maxSandSpawnPerDestroy = isServer ? 250 : 500;
         this.sandAdaptiveCursor = 0;
         this.sandChunkBroadcastRadius = 6;
         this.players = new Map();
@@ -89,6 +89,12 @@ class GameEngine {
         this.eigenSand = typeof EigenSandManager === 'function'
             ? new EigenSandManager(this)
             : null;
+        this.terrainChunkRemapCache = new Map();
+        this.activeTerrainChunkCache = {
+            tick: -1,
+            chunkSize: 0,
+            keys: null
+        };
 
         // Physics settings (deterministic)
         this.gravity = 0.3;
@@ -162,6 +168,14 @@ class GameEngine {
         this.lastFluidSpawnTick = -1;
         this.liquidBlobCache.clear();
         this.nextLiquidBlobId = 1;
+        if (this.terrainChunkRemapCache) {
+            this.terrainChunkRemapCache.clear();
+        }
+        if (this.activeTerrainChunkCache) {
+            this.activeTerrainChunkCache.tick = -1;
+            this.activeTerrainChunkCache.chunkSize = 0;
+            this.activeTerrainChunkCache.keys = null;
+        }
         if (this.eigenSand) {
             this.eigenSand.reset();
         }
@@ -216,6 +230,14 @@ class GameEngine {
         this.pendingFluidCount = 0;
         this.liquidBlobCache.clear();
         this.nextLiquidBlobId = 1;
+        if (this.terrainChunkRemapCache) {
+            this.terrainChunkRemapCache.clear();
+        }
+        if (this.activeTerrainChunkCache) {
+            this.activeTerrainChunkCache.tick = -1;
+            this.activeTerrainChunkCache.chunkSize = 0;
+            this.activeTerrainChunkCache.keys = null;
+        }
         
         // Spawn initial fluids from the loaded terrain
         const fluids = this.terrain.consumeInitialFluids();
@@ -414,6 +436,14 @@ class GameEngine {
                     this.activeSandLookup.push(sand);
                 }
             }
+        }
+
+        if (this.isServer && this.terrain && typeof this.terrain.updateLoadedChunks === 'function') {
+            const terrainChunkSize = this.terrain && typeof this.terrain.chunkSize === 'number'
+                ? this.terrain.chunkSize
+                : 64;
+            const activeTerrainChunks = this.getActiveTerrainChunkSet(terrainChunkSize);
+            this.terrain.updateLoadedChunks(activeTerrainChunks, this.tick);
         }
     }
 
@@ -1719,11 +1749,194 @@ class GameEngine {
         };
     }
 
-    serializeTerrainChunksForKeys(keys) {
-        if (!this.terrain || typeof this.terrain.serializeChunksForKeys !== 'function') {
+    serializeTerrainChunksForKeys(keys, options = {}) {
+        if (!keys || typeof keys[Symbol.iterator] !== 'function') {
             return null;
         }
-        return this.terrain.serializeChunksForKeys(keys);
+
+        const terrain = this.terrain;
+        if (!terrain || typeof terrain.serializeChunksForKeys !== 'function') {
+            return null;
+        }
+
+        const requestedKeys = Array.from(keys);
+        if (!requestedKeys.length) {
+            return null;
+        }
+
+        const terrainChunkSize = Math.max(1, terrain.chunkSize || 1);
+        const terrainWidth = Math.max(1, terrain.width || this.width || 0);
+        const terrainHeight = Math.max(1, terrain.height || this.height || 0);
+        const totalTerrainChunksX = Math.max(1, Math.ceil(terrainWidth / terrainChunkSize));
+        const totalTerrainChunksY = Math.max(1, Math.ceil(terrainHeight / terrainChunkSize));
+        const sourceChunkSize = (options && Number.isFinite(options.keyChunkSize) && options.keyChunkSize > 0)
+            ? options.keyChunkSize
+            : terrainChunkSize;
+
+        const normalizeKey = (rawKey) => {
+            if (rawKey === null || rawKey === undefined) return null;
+            const parts = typeof rawKey === 'string' ? rawKey.split('|') : String(rawKey).split('|');
+            if (parts.length !== 2) return null;
+            let chunkX = parseInt(parts[0], 10);
+            let chunkY = parseInt(parts[1], 10);
+            if (Number.isNaN(chunkX) || Number.isNaN(chunkY)) return null;
+            chunkX = ((chunkX % totalTerrainChunksX) + totalTerrainChunksX) % totalTerrainChunksX;
+            chunkY = Math.max(0, Math.min(totalTerrainChunksY - 1, chunkY));
+            return `${chunkX}|${chunkY}`;
+        };
+
+        const activeTerrainChunks = this.isServer
+            ? this.getActiveTerrainChunkSet(terrainChunkSize)
+            : null;
+
+        if (sourceChunkSize === terrainChunkSize) {
+            const filtered = [];
+            for (let i = 0; i < requestedKeys.length; i++) {
+                const normalizedKey = normalizeKey(requestedKeys[i]);
+                if (!normalizedKey) continue;
+                if (activeTerrainChunks && activeTerrainChunks.size && !activeTerrainChunks.has(normalizedKey)) {
+                    continue;
+                }
+                filtered.push(normalizedKey);
+            }
+            if (filtered.length === 0) {
+                return null;
+            }
+            return terrain.serializeChunksForKeys(new Set(filtered));
+        }
+
+        if (!this.terrainChunkRemapCache) {
+            this.terrainChunkRemapCache = new Map();
+        }
+        const remapCache = this.terrainChunkRemapCache;
+        if (remapCache.size > 4096) {
+            remapCache.clear();
+        }
+
+        const normalizedKeys = new Set();
+
+        for (let i = 0; i < requestedKeys.length; i++) {
+            const normalizedKey = normalizeKey(requestedKeys[i]);
+            if (!normalizedKey) continue;
+
+            const remapKey = `${terrainChunkSize}:${sourceChunkSize}:${normalizedKey}`;
+            let mapped = remapCache.get(remapKey);
+            if (!mapped) {
+                const [chunkXStr, chunkYStr] = normalizedKey.split('|');
+                const chunkX = parseInt(chunkXStr, 10);
+                const chunkY = parseInt(chunkYStr, 10);
+                if (Number.isNaN(chunkX) || Number.isNaN(chunkY)) {
+                    remapCache.set(remapKey, []);
+                    continue;
+                }
+
+                const startWorldX = chunkX * sourceChunkSize;
+                const startWorldY = chunkY * sourceChunkSize;
+                const endWorldX = startWorldX + sourceChunkSize;
+                const endWorldY = startWorldY + sourceChunkSize;
+
+                const minChunkX = Math.floor(startWorldX / terrainChunkSize);
+                const maxChunkX = Math.floor((endWorldX - 1) / terrainChunkSize);
+                const minChunkY = Math.max(0, Math.floor(startWorldY / terrainChunkSize));
+                const maxChunkY = Math.min(totalTerrainChunksY - 1, Math.floor((endWorldY - 1) / terrainChunkSize));
+
+                if (minChunkY > maxChunkY) {
+                    remapCache.set(remapKey, []);
+                    continue;
+                }
+
+                const bucket = [];
+                for (let cx = minChunkX; cx <= maxChunkX; cx++) {
+                    const normalizedX = ((cx % totalTerrainChunksX) + totalTerrainChunksX) % totalTerrainChunksX;
+                    for (let cy = minChunkY; cy <= maxChunkY; cy++) {
+                        if (cy < 0 || cy >= totalTerrainChunksY) continue;
+                        bucket.push(`${normalizedX}|${cy}`);
+                    }
+                }
+                remapCache.set(remapKey, bucket);
+                mapped = bucket;
+            }
+
+            if (!mapped || mapped.length === 0) {
+                continue;
+            }
+
+            for (let j = 0; j < mapped.length; j++) {
+                const candidate = mapped[j];
+                if (activeTerrainChunks && activeTerrainChunks.size && !activeTerrainChunks.has(candidate)) {
+                    continue;
+                }
+                normalizedKeys.add(candidate);
+            }
+        }
+
+        if (normalizedKeys.size === 0) {
+            return null;
+        }
+
+        return terrain.serializeChunksForKeys(normalizedKeys);
+    }
+
+    getActiveTerrainChunkSet(chunkSize) {
+        if (!this.isServer) {
+            return null;
+        }
+        if (!Number.isFinite(chunkSize) || chunkSize <= 0) {
+            return null;
+        }
+        if (!this.players || this.players.size === 0) {
+            return null;
+        }
+
+        if (!this.activeTerrainChunkCache) {
+            this.activeTerrainChunkCache = { tick: -1, chunkSize: 0, keys: null };
+        }
+        const cache = this.activeTerrainChunkCache;
+        if (cache.tick === this.tick && cache.chunkSize === chunkSize && cache.keys instanceof Set) {
+            return cache.keys;
+        }
+
+        const totalChunksX = Math.max(1, Math.ceil(this.width / chunkSize));
+        const totalChunksY = Math.max(1, Math.ceil(this.height / chunkSize));
+        const chunks = new Set();
+
+        const players = this.playerList.length ? this.playerList : Array.from(this.players.values());
+        if (!players.length) {
+            cache.tick = this.tick;
+            cache.chunkSize = chunkSize;
+            cache.keys = chunks;
+            return chunks;
+        }
+
+        const computeRadius = Math.max(0, Math.floor(this.playerChunkComputeRadius));
+        const bufferRadius = Math.max(0, Math.floor(this.playerChunkBufferRadius));
+        const combinedRadius = computeRadius + bufferRadius + 1;
+        const pixelRadius = combinedRadius * this.chunkSize;
+        const terrainRadius = Math.max(1, Math.ceil(pixelRadius / chunkSize));
+
+        for (let i = 0; i < players.length; i++) {
+            const player = players[i];
+            if (!player) continue;
+            const normalizedX = Number.isFinite(player.x) ? player.x : 0;
+            const clampedY = Number.isFinite(player.y)
+                ? Math.max(0, Math.min(this.height - 1, player.y))
+                : 0;
+            const baseChunkX = Math.floor(normalizedX / chunkSize);
+            const baseChunkY = Math.floor(clampedY / chunkSize);
+            for (let dy = -terrainRadius; dy <= terrainRadius; dy++) {
+                const chunkY = baseChunkY + dy;
+                if (chunkY < 0 || chunkY >= totalChunksY) continue;
+                for (let dx = -terrainRadius; dx <= terrainRadius; dx++) {
+                    const chunkX = ((baseChunkX + dx) % totalChunksX + totalChunksX) % totalChunksX;
+                    chunks.add(`${chunkX}|${chunkY}`);
+                }
+            }
+        }
+
+        cache.tick = this.tick;
+        cache.chunkSize = chunkSize;
+        cache.keys = chunks;
+        return chunks;
     }
 
     clearSandChunks() {

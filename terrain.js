@@ -147,6 +147,13 @@ class Terrain {
         this.caves = [];
         this.initialFluids = [];
         this.generating = false;
+        this.unloadedChunks = new Map();
+        this.loadedChunks = new Set();
+        this.chunkLastActive = new Map();
+        this.chunkRetentionTicks = 1800; // ~30 seconds at 60Hz to avoid thrash
+        this.maxChunkUnloadPerUpdate = 4;
+        this.maxChunkLoadPerUpdate = 2;
+        this.resetChunkStreamingState();
     }
 
     nextRandomFloat() {
@@ -163,6 +170,362 @@ class Terrain {
         this.chunkWidth = Math.ceil(this.width / this.chunkSize);
         this.chunkHeight = Math.ceil(this.height / this.chunkSize);
         this.modifiedChunks.clear();
+        this.resetChunkStreamingState();
+    }
+
+    resetChunkStreamingState() {
+        if (!this.unloadedChunks) {
+            this.unloadedChunks = new Map();
+        } else {
+            this.unloadedChunks.clear();
+        }
+
+        if (!this.loadedChunks) {
+            this.loadedChunks = new Set();
+        } else {
+            this.loadedChunks.clear();
+        }
+
+        if (!this.chunkLastActive) {
+            this.chunkLastActive = new Map();
+        } else {
+            this.chunkLastActive.clear();
+        }
+
+        const chunkWidth = Math.max(1, this.chunkWidth);
+        const chunkHeight = Math.max(1, this.chunkHeight);
+        for (let y = 0; y < chunkHeight; y++) {
+            for (let x = 0; x < chunkWidth; x++) {
+                const key = `${x}|${y}`;
+                this.loadedChunks.add(key);
+                this.chunkLastActive.set(key, 0);
+            }
+        }
+    }
+
+    ensureChunkLoadedForCoordinates(x, y) {
+        if (!this.unloadedChunks || this.unloadedChunks.size === 0) return;
+        if (y < 0 || y >= this.height) return;
+        const chunkX = Math.floor(x / this.chunkSize);
+        const chunkY = Math.floor(y / this.chunkSize);
+        const key = `${chunkX}|${chunkY}`;
+        if (this.unloadedChunks.has(key)) {
+            this.loadChunkByKey(key);
+        }
+    }
+
+    ensureRegionLoaded(minX, minY, maxX, maxY, budget = this.maxChunkLoadPerUpdate || 2, queueKey = null) {
+        if (!this.unloadedChunks || this.unloadedChunks.size === 0) return 0;
+        const clampedMinY = Math.max(0, Math.floor(minY));
+        const clampedMaxY = Math.min(this.height - 1, Math.floor(maxY));
+        if (clampedMinY > clampedMaxY) return 0;
+
+        let remainingBudget = Math.max(0, budget | 0);
+        if (remainingBudget === 0) {
+            this.enqueueRegionLoad(queueKey, minX, minY, maxX, maxY);
+            return 0;
+        }
+
+        const wrappedMinX = Math.floor(wrapHorizontal(minX, this.width));
+        const wrappedMaxX = Math.floor(wrapHorizontal(maxX, this.width));
+        const coverFullWidth = Math.abs(maxX - minX) >= this.width - 1;
+
+        const minChunkY = Math.max(0, Math.floor(clampedMinY / this.chunkSize));
+        const maxChunkY = Math.max(0, Math.floor(clampedMaxY / this.chunkSize));
+
+        const chunkWidth = this.chunkWidth;
+
+        if (coverFullWidth) {
+            for (let chunkY = minChunkY; chunkY <= maxChunkY; chunkY++) {
+                for (let chunkX = 0; chunkX < chunkWidth; chunkX++) {
+                    if (remainingBudget <= 0) {
+                        this.enqueueRegionLoad(queueKey, chunkX * this.chunkSize, chunkY * this.chunkSize,
+                            (chunkX + 1) * this.chunkSize - 1, (chunkY + 1) * this.chunkSize - 1);
+                        return budget - remainingBudget;
+                    }
+                    const key = `${chunkX}|${chunkY}`;
+                    if (this.unloadedChunks.has(key) && this.loadChunkByKey(key)) {
+                        remainingBudget--;
+                    }
+                }
+            }
+            return budget - remainingBudget;
+        }
+
+        const normalizedMinX = Math.floor(Math.min(wrappedMinX, wrappedMaxX));
+        const normalizedMaxX = Math.floor(Math.max(wrappedMinX, wrappedMaxX));
+
+        const rangeA = { min: normalizedMinX, max: normalizedMaxX };
+        const ranges = wrappedMinX <= wrappedMaxX
+            ? [rangeA]
+            : [
+                { min: 0, max: normalizedMaxX },
+                { min: normalizedMinX, max: this.width - 1 }
+              ];
+
+        for (const range of ranges) {
+            const minChunkX = Math.floor(range.min / this.chunkSize);
+            const maxChunkX = Math.floor(range.max / this.chunkSize);
+            for (let chunkY = minChunkY; chunkY <= maxChunkY; chunkY++) {
+                for (let chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
+                    const wrappedChunkX = ((chunkX % chunkWidth) + chunkWidth) % chunkWidth;
+                    if (remainingBudget <= 0) {
+                        this.enqueueRegionLoad(queueKey, chunkX * this.chunkSize, chunkY * this.chunkSize,
+                            (chunkX + 1) * this.chunkSize - 1, (chunkY + 1) * this.chunkSize - 1);
+                        return budget - remainingBudget;
+                    }
+                    const key = `${wrappedChunkX}|${chunkY}`;
+                    if (this.unloadedChunks.has(key) && this.loadChunkByKey(key)) {
+                        remainingBudget--;
+                    }
+                }
+            }
+        }
+
+        return budget - remainingBudget;
+    }
+
+    enqueueRegionLoad(queueKey, minX, minY, maxX, maxY) {
+        if (!queueKey) return;
+        if (!this.pendingRegionLoads) {
+            this.pendingRegionLoads = new Map();
+        }
+        if (!this.pendingRegionLoads.has(queueKey)) {
+            this.pendingRegionLoads.set(queueKey, []);
+        }
+        this.pendingRegionLoads.get(queueKey).push({ minX, minY, maxX, maxY });
+    }
+
+    loadChunkByKey(key) {
+        if (!this.unloadedChunks || !this.unloadedChunks.has(key)) {
+            if (this.loadedChunks) {
+                this.loadedChunks.add(key);
+            }
+        
+            return false;
+        }
+
+        const data = this.unloadedChunks.get(key);
+        if (!data) {
+            return false;
+        }
+
+        const parts = String(key).split('|');
+        if (parts.length !== 2) {
+            this.unloadedChunks.delete(key);
+            return false;
+        }
+
+        let chunkX = parseInt(parts[0], 10);
+        let chunkY = parseInt(parts[1], 10);
+        if (Number.isNaN(chunkX) || Number.isNaN(chunkY)) {
+            this.unloadedChunks.delete(key);
+            return false;
+        }
+
+        const chunkWidth = this.chunkWidth;
+        const chunkHeight = this.chunkHeight;
+        chunkX = ((chunkX % chunkWidth) + chunkWidth) % chunkWidth;
+        chunkY = Math.max(0, Math.min(chunkHeight - 1, chunkY));
+
+        const chunkSize = this.chunkSize;
+        const startX = chunkX * chunkSize;
+        const startY = chunkY * chunkSize;
+        const width = this.width;
+        const height = this.height;
+        const total = data.length;
+
+        let index = 0;
+        for (let localY = 0; localY < chunkSize && index < total; localY++) {
+            const worldY = startY + localY;
+            if (worldY < 0 || worldY >= height) {
+                index += chunkSize;
+                continue;
+            }
+            const rowOffset = worldY * width;
+            for (let localX = 0; localX < chunkSize && index < total; localX++, index++) {
+                const worldX = startX + localX;
+                const wrappedX = Math.floor(wrapHorizontal(worldX, width));
+                const destIndex = rowOffset + wrappedX;
+                const material = data[index];
+                this.pixels[destIndex] = material;
+                if (this.pixelColors32) {
+                    const color = this.getMaterialColor(material, wrappedX, worldY);
+                    this.pixelColors32[destIndex] = color ? color.rgba32 : 0;
+                }
+            }
+        }
+
+        this.unloadedChunks.delete(key);
+        if (this.loadedChunks) {
+            this.loadedChunks.add(key);
+        }
+        const minX = Math.max(0, startX);
+        const maxX = Math.min(this.width - 1, startX + chunkSize - 1);
+        const minY = Math.max(0, startY);
+        const maxY = Math.min(this.height - 1, startY + chunkSize - 1);
+        this.rebuildSurfaceColumns(minX, maxX);
+        this.markDirtyRegion(minX, minY, maxX, maxY);
+        return true;
+    }
+
+    unloadChunkByKey(key) {
+        if (!this.loadedChunks || !this.loadedChunks.has(key)) {
+            return false;
+        }
+        if (this.unloadedChunks && this.unloadedChunks.has(key)) {
+            return false;
+        }
+
+        const parts = String(key).split('|');
+        if (parts.length !== 2) {
+            return false;
+        }
+
+        let chunkX = parseInt(parts[0], 10);
+        let chunkY = parseInt(parts[1], 10);
+        if (Number.isNaN(chunkX) || Number.isNaN(chunkY)) {
+            return false;
+        }
+
+        const chunkWidth = this.chunkWidth;
+        const chunkHeight = this.chunkHeight;
+        chunkX = ((chunkX % chunkWidth) + chunkWidth) % chunkWidth;
+        chunkY = Math.max(0, Math.min(chunkHeight - 1, chunkY));
+
+        const chunkSize = this.chunkSize;
+        const startX = chunkX * chunkSize;
+        const startY = chunkY * chunkSize;
+        const width = this.width;
+        const height = this.height;
+        let buffer = this.unloadedChunks ? this.unloadedChunks.get(key) : null;
+        if (!buffer || buffer.length !== chunkSize * chunkSize) {
+            buffer = new Uint8Array(chunkSize * chunkSize);
+        }
+
+        let index = 0;
+        for (let localY = 0; localY < chunkSize; localY++) {
+            const worldY = startY + localY;
+            if (worldY < 0 || worldY >= height) {
+                index += chunkSize;
+                continue;
+            }
+            const rowOffset = worldY * width;
+            for (let localX = 0; localX < chunkSize; localX++, index++) {
+                const worldX = startX + localX;
+                const wrappedX = Math.floor(wrapHorizontal(worldX, width));
+                const destIndex = rowOffset + wrappedX;
+                const material = this.pixels[destIndex];
+                buffer[index] = material;
+                this.pixels[destIndex] = this.EMPTY;
+                if (this.pixelColors32) {
+                    this.pixelColors32[destIndex] = 0;
+                }
+            }
+        }
+
+        if (!this.unloadedChunks) {
+            this.unloadedChunks = new Map();
+        }
+        this.unloadedChunks.set(key, buffer);
+        this.loadedChunks.delete(key);
+        if (this.modifiedChunks) {
+            this.modifiedChunks.delete(key);
+        }
+        const minX = Math.max(0, startX);
+        const maxX = Math.min(this.width - 1, startX + chunkSize - 1);
+        const minY = Math.max(0, startY);
+        const maxY = Math.min(this.height - 1, startY + chunkSize - 1);
+        this.rebuildSurfaceColumns(minX, maxX);
+        this.markDirtyRegion(minX, minY, maxX, maxY);
+        return true;
+    }
+
+    rebuildSurfaceColumns(minX, maxX) {
+        if (!this.surfaceCache) return;
+        const clampedMinX = Math.max(0, Math.floor(minX));
+        const clampedMaxX = Math.min(this.width - 1, Math.floor(maxX));
+        if (clampedMinX > clampedMaxX) return;
+        const width = this.width;
+        for (let x = clampedMinX; x <= clampedMaxX; x++) {
+            let y = 0;
+            while (y < this.height && this.pixels[y * width + x] === this.EMPTY) {
+                y++;
+            }
+            this.surfaceCache[x] = y < this.height ? y : this.height;
+        }
+    }
+
+    updateLoadedChunks(activeKeys, tick = 0) {
+        if (!this.loadedChunks) {
+            return;
+        }
+        const activeSet = activeKeys instanceof Set
+            ? activeKeys
+            : (Array.isArray(activeKeys) ? new Set(activeKeys) : new Set());
+
+        const nowTick = Number.isFinite(tick) ? tick : 0;
+
+        if (!this.regionLoadCooldown) {
+            this.regionLoadCooldown = 0;
+        }
+        if (!this.pendingRegionLoads) {
+            this.pendingRegionLoads = new Map();
+        }
+
+        if (activeSet.size) {
+            let loads = 0;
+            for (const key of activeSet) {
+                if (!key) continue;
+                this.chunkLastActive.set(key, nowTick);
+                if (this.unloadedChunks && this.unloadedChunks.has(key)) {
+                    if (loads < this.maxChunkLoadPerUpdate) {
+                        if (this.loadChunkByKey(key)) {
+                            loads++;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!this.loadedChunks.size) {
+            return;
+        }
+
+        if (this.regionLoadCooldown <= 0 && this.pendingRegionLoads.size) {
+            const iterator = this.pendingRegionLoads.entries().next();
+            if (!iterator.done) {
+                const [queueKey, regions] = iterator.value;
+                const region = regions.shift();
+                if (regions.length === 0) {
+                    this.pendingRegionLoads.delete(queueKey);
+                }
+                if (region) {
+                    this.ensureRegionLoaded(region.minX, region.minY, region.maxX, region.maxY,
+                        this.maxChunkLoadPerUpdate, queueKey);
+                }
+            }
+            this.regionLoadCooldown = 5;
+        } else if (this.regionLoadCooldown > 0) {
+            this.regionLoadCooldown--;
+        }
+
+        const unloadTargets = [];
+        for (const key of this.loadedChunks) {
+            if (activeSet.has(key)) continue;
+            const lastActive = this.chunkLastActive.get(key) || -Infinity;
+            if (nowTick - lastActive < this.chunkRetentionTicks) {
+                continue;
+            }
+            unloadTargets.push(key);
+            if (unloadTargets.length >= this.maxChunkUnloadPerUpdate) {
+                break;
+            }
+        }
+
+        for (let i = 0; i < unloadTargets.length; i++) {
+            this.unloadChunkByKey(unloadTargets[i]);
+        }
     }
     
     generate() {
@@ -246,6 +609,7 @@ class Terrain {
         this.modifiedChunks.clear();
         this.suppressModificationTracking = false;
         this.generating = false;
+        this.resetChunkStreamingState();
     }
 
     generateSurfaceLakes() {
@@ -309,6 +673,7 @@ class Terrain {
     setPixel(x, y, material) {
         if (y < 0 || y >= this.height) return;
         const wrappedX = Math.floor(wrapHorizontal(x, this.width));
+        this.ensureChunkLoadedForCoordinates(wrappedX, y);
         const index = y * this.width + wrappedX;
         const previous = this.pixels[index];
 
@@ -337,6 +702,7 @@ class Terrain {
     getPixel(x, y) {
         if (y < 0 || y >= this.height) return this.BEDROCK;
         const wrappedX = Math.floor(wrapHorizontal(x, this.width));
+        this.ensureChunkLoadedForCoordinates(wrappedX, y);
         return this.pixels[y * this.width + wrappedX];
     }
 
@@ -374,6 +740,7 @@ class Terrain {
         
         // Recreate rendering buffers after loading snapshot
         this.ensureRenderResources();
+        this.resetChunkStreamingState();
         
         return true;
     }
@@ -421,7 +788,9 @@ class Terrain {
         
         centerX = Math.floor(centerX);
         centerY = Math.floor(centerY);
-        
+        this.ensureRegionLoaded(centerX - radius - this.chunkSize, centerY - radius - this.chunkSize,
+            centerX + radius + this.chunkSize, centerY + radius + this.chunkSize);
+
         let dirtyMinX = Infinity;
         let dirtyMinY = Infinity;
         let dirtyMaxX = -Infinity;
@@ -857,6 +1226,7 @@ class Terrain {
             const chunkX = parseInt(chunkXString, 10);
             const chunkY = parseInt(chunkYString, 10);
             if (Number.isNaN(chunkX) || Number.isNaN(chunkY)) continue;
+            this.loadChunkByKey(`${chunkX}|${chunkY}`);
             for (let j = 0; j < entry.pixels.length; j++) {
                 const pixelData = entry.pixels[j];
                 if (!pixelData) continue;
@@ -905,15 +1275,21 @@ class Terrain {
             chunkY = Math.max(0, Math.min(totalChunksY - 1, chunkY));
 
             const buffer = new Uint8Array(chunkSize * chunkSize);
+            const stored = this.unloadedChunks ? this.unloadedChunks.get(`${chunkX}|${chunkY}`) : null;
 
-            for (let localY = 0; localY < chunkSize; localY++) {
-                const worldY = chunkY * chunkSize + localY;
-                if (worldY < 0 || worldY >= this.height) continue;
-                for (let localX = 0; localX < chunkSize; localX++) {
-                    const worldX = chunkX * chunkSize + localX;
-                    const wrappedX = Math.floor(wrapHorizontal(worldX, this.width));
-                    const index = worldY * this.width + wrappedX;
-                    buffer[localY * chunkSize + localX] = this.pixels[index];
+            if (stored && stored.length === buffer.length) {
+                buffer.set(stored);
+            } else {
+                for (let localY = 0; localY < chunkSize; localY++) {
+                    const worldY = chunkY * chunkSize + localY;
+                    if (worldY < 0 || worldY >= this.height) continue;
+                    for (let localX = 0; localX < chunkSize; localX++) {
+                        const worldX = chunkX * chunkSize + localX;
+                        const wrappedX = Math.floor(wrapHorizontal(worldX, this.width));
+                        this.ensureChunkLoadedForCoordinates(wrappedX, worldY);
+                        const index = worldY * this.width + wrappedX;
+                        buffer[localY * chunkSize + localX] = this.pixels[index];
+                    }
                 }
             }
 
@@ -954,6 +1330,9 @@ class Terrain {
 
             chunkX = ((chunkX % totalChunksX) + totalChunksX) % totalChunksX;
             chunkY = Math.max(0, Math.min(totalChunksY - 1, chunkY));
+
+            const chunkKey = `${chunkX}|${chunkY}`;
+            this.loadChunkByKey(chunkKey);
 
             const dataString = entry.data;
             if (typeof dataString !== 'string' || dataString.length === 0) continue;
